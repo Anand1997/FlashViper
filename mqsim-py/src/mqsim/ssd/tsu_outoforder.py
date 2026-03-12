@@ -1,4 +1,5 @@
 from mqsim.ssd.tsu_base import TSUBase
+from mqsim.utils.signal import Signal
 
 class TSUOutOfOrder(TSUBase):
     def __init__(self, id, channel_count, chip_no_per_channel):
@@ -14,6 +15,8 @@ class TSUOutOfOrder(TSUBase):
         self.gc_write_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         self.gc_erase_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         self.mapping_read_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        
+        self.on_transaction_finished = Signal()
 
     def schedule(self):
         for trans in self.transaction_receive_slots:
@@ -28,7 +31,6 @@ class TSUOutOfOrder(TSUBase):
                 else:
                     self.user_read_queues[channel_id][chip_id].append(trans)
             elif trans.type == "WRITE":
-                # Simplification: Everything goes to user write for now, unless GC
                 if trans.source == "GC_WL":
                     self.gc_write_queues[channel_id][chip_id].append(trans)
                 else:
@@ -37,6 +39,15 @@ class TSUOutOfOrder(TSUBase):
                 self.gc_erase_queues[channel_id][chip_id].append(trans)
                 
         self.transaction_receive_slots.clear()
+
+    def service_chip_requests(self, chip):
+        """
+        Attempt to service the next transaction for the given chip.
+        Prioritizes: READ > WRITE > ERASE (with sub-priorities for Mapping/GC)
+        """
+        if not self.service_read_transaction(chip):
+            if not self.service_write_transaction(chip):
+                self.service_erase_transaction(chip)
 
     def service_read_transaction(self, chip):
         channel_id = chip.channel_id
@@ -48,7 +59,7 @@ class TSUOutOfOrder(TSUBase):
             self._issue_command_to_chip(chip, tx)
             return True
             
-        # Priority 2: GC (assuming urgent mode is true for this simple implementation)
+        # Priority 2: GC
         if len(self.gc_read_queues[channel_id][chip_id]) > 0:
             tx = self.gc_read_queues[channel_id][chip_id].pop(0)
             self._issue_command_to_chip(chip, tx)
@@ -62,12 +73,38 @@ class TSUOutOfOrder(TSUBase):
             
         return False
 
+    def service_write_transaction(self, chip):
+        channel_id = chip.channel_id
+        chip_id = chip.chip_id
+        
+        if len(self.gc_write_queues[channel_id][chip_id]) > 0:
+            tx = self.gc_write_queues[channel_id][chip_id].pop(0)
+            self._issue_command_to_chip(chip, tx)
+            return True
+            
+        if len(self.user_write_queues[channel_id][chip_id]) > 0:
+            tx = self.user_write_queues[channel_id][chip_id].pop(0)
+            self._issue_command_to_chip(chip, tx)
+            return True
+            
+        return False
+
+    def service_erase_transaction(self, chip):
+        channel_id = chip.channel_id
+        chip_id = chip.chip_id
+        
+        if len(self.gc_erase_queues[channel_id][chip_id]) > 0:
+            tx = self.gc_erase_queues[channel_id][chip_id].pop(0)
+            self._issue_command_to_chip(chip, tx)
+            return True
+            
+        return False
+
     def _issue_command_to_chip(self, chip, transaction):
-        # In a full simulation, this would interact with the PHY layer
-        # and schedule the chip to become BUSY, then IDLE later.
-        pass
+        # Notify chip to start execution
+        cmd_type = "READ_PAGE" if transaction.type == "READ" else "PROGRAM_PAGE"
+        if transaction.type == "ERASE": cmd_type = "ERASE_BLOCK"
+        
+        chip.start_command_execution(cmd_type, transaction.address.get("page", 0))
 
-    def service_write_transaction(self, chip): pass
-    def service_erase_transaction(self, chip): pass
     def execute_sim_event(self, event): pass
-

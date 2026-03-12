@@ -1,19 +1,8 @@
 from mqsim.ssd.flash_block_manager import FlashBlockManager
 from mqsim.ssd.mapping_unit import PageLevelAddressMapping
-from mqsim.ssd.tsu_base import TSUBase
+from mqsim.ssd.tsu_outoforder import TSUOutOfOrder
+from mqsim.ssd.nvm_transaction import NVMTransaction, TransactionType, TransactionSource
 from mqsim.utils.random_generator import RandomGenerator
-
-class SimpleTSU(TSUBase):
-    def schedule(self):
-        # A simple pass-through scheduler for basic functionality
-        for trans in self.transaction_receive_slots:
-            if self._transaction_is_ready(trans):
-                self.transaction_dispatch_slots.append(trans)
-        self.transaction_receive_slots.clear()
-
-    def service_read_transaction(self, chip): pass
-    def service_write_transaction(self, chip): pass
-    def service_erase_transaction(self, chip): pass
 
 class FTL:
     def __init__(self, channel_no, chip_no_per_channel, die_no_per_chip, 
@@ -46,4 +35,39 @@ class FTL:
         self.address_mapping_unit = PageLevelAddressMapping(no_of_logical_pages)
 
         # 3. Initialize Transaction Scheduling Unit (TSU)
-        self.tsu = SimpleTSU()
+        self.tsu = TSUOutOfOrder("FTL.TSU", channel_no, chip_no_per_channel)
+
+    def segment_user_request(self, user_request):
+        """
+        Breaks a host-level request into page-sized NVM transactions.
+        """
+        lsa = user_request.lsa
+        size = user_request.size_in_sectors
+        
+        transactions = []
+        
+        # Calculate the starting LPA and offset
+        current_lsa = lsa
+        remaining_size = size
+        
+        while remaining_size > 0:
+            lpa = current_lsa // self.page_size_in_sectors
+            # In MQSim, multiple sectors can be in one transaction if they fit in one page
+            # For simplicity, we create one transaction per page boundary
+            sectors_in_this_page = min(remaining_size, 
+                                       self.page_size_in_sectors - (current_lsa % self.page_size_in_sectors))
+            
+            tr = NVMTransaction(
+                stream_id=user_request.stream_id,
+                transaction_type=user_request.type,
+                source=TransactionSource.USERIO,
+                lpa=lpa,
+                user_request=user_request
+            )
+            transactions.append(tr)
+            user_request.transaction_list.append(tr)
+            
+            current_lsa += sectors_in_this_page
+            remaining_size -= sectors_in_this_page
+            
+        return transactions
