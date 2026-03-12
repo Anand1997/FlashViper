@@ -3,11 +3,11 @@ import os
 from mqsim.exec.execution_parameter_set import ExecutionParameterSet
 
 def test_parse_ssd_config():
-    # Path to original ssdconfig.xml
-    config_path = "ssdconfig.xml"
+    # Path to original ssdconfig.xml (one level up from mqsim-py root)
+    config_path = "../ssdconfig.xml"
     if not os.path.exists(config_path):
-        # Fallback if running from different root
-        config_path = "../ssdconfig.xml"
+        # Fallback for different execution contexts
+        config_path = "ssdconfig.xml"
     
     params = ExecutionParameterSet()
     params.deserialize(config_path)
