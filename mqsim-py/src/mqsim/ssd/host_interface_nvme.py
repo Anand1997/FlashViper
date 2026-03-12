@@ -1,4 +1,5 @@
 from mqsim.sim.sim_object import SimObject
+from mqsim.ssd.user_request import UserRequest
 
 class InputStreamNVMe:
     def __init__(self, priority_class, start_lsa, end_lsa,
@@ -33,6 +34,7 @@ class HostInterfaceNVMe(SimObject):
         self.sectors_per_page = sectors_per_page
         
         self.input_streams = []
+        self.cache_manager = None # Will be linked later
 
     def create_new_stream(self, priority_class, start_lsa, end_lsa,
                           submission_queue_base_address, completion_queue_base_address):
@@ -47,6 +49,31 @@ class HostInterfaceNVMe(SimObject):
         )
         self.input_streams.append(stream)
         return stream_id
+
+    def submit_io_request(self, stream_id, host_req):
+        """
+        In MQSim, this happens via PCIe doorbell rings and DMA fetches.
+        We simplify this by passing the request directly to the interface.
+        """
+        stream = self.input_streams[stream_id]
+        stream.submission_tail = (stream.submission_tail + 1) % stream.submission_queue_size
+        
+        # Create UserRequest (SSD's internal representation)
+        user_req = UserRequest(
+            stream_id=stream_id,
+            type=host_req['type'],
+            lsa=host_req['lsa'],
+            size_in_sectors=host_req['size']
+        )
+        
+        stream.waiting_user_requests.append(user_req)
+        stream.on_the_fly_requests += 1
+        
+        if self.cache_manager:
+            # Inform cache manager of new request
+            pass
+            
+        return user_req
 
     def execute_sim_event(self, event):
         pass

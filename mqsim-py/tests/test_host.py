@@ -1,25 +1,44 @@
 import pytest
 from mqsim.host.io_flow import SyntheticIOFlow
+from mqsim.sim.engine import Engine
+
+class MockHostInterface:
+    def __init__(self):
+        self.submitted_requests = []
+        
+    def submit_io_request(self, req):
+        self.submitted_requests.append(req)
 
 def test_synthetic_flow_generation():
-    # Setup flow: 50% reads, uniform random addresses between 0 and 1000
+    engine = Engine()
+    engine.reset()
+
+    mock_interface = MockHostInterface()
+    
+    # Setup flow: 50% reads, queue depth of 5
     flow = SyntheticIOFlow(
+        id="Flow0",
         read_ratio=0.5,
         start_lsa=0,
         end_lsa=1000,
-        seed=42
+        seed=42,
+        queue_depth=5,
+        host_interface=mock_interface
     )
     
-    # Generate 100 requests and check distribution
-    requests = [flow.generate_next_request() for _ in range(100)]
+    engine.add_object(flow)
+    engine.start_simulation()
     
-    reads = [r for r in requests if r['type'] == 'READ']
-    writes = [r for r in requests if r['type'] == 'WRITE']
+    # Verify that the engine triggered execute_sim_event and generated 5 requests
+    assert len(mock_interface.submitted_requests) == 5
     
-    # With seed 42, we expect a roughly 50/50 split
+    reads = [r for r in mock_interface.submitted_requests if r['type'] == 'READ']
+    writes = [r for r in mock_interface.submitted_requests if r['type'] == 'WRITE']
+    
+    # Check that both reads and writes are generated (with seed 42)
     assert len(reads) > 0
     assert len(writes) > 0
     
     # Check addresses are within range
-    for r in requests:
+    for r in mock_interface.submitted_requests:
         assert 0 <= r['lsa'] <= 1000

@@ -28,3 +28,25 @@ def test_nvme_host_interface_stream_creation():
     stream = hi.input_streams[0]
     assert stream.submission_queue_size == 1024
     assert stream.submission_queue_base_address == 0x1000
+
+def test_nvme_submit_io_request():
+    hi = HostInterfaceNVMe("HI0", 1000000, 1024, 1024, 8, 512, 16)
+    stream_id = hi.create_new_stream("HIGH", 0, 500000, 0x1000, 0x2000)
+    
+    host_req = {
+        'type': 'READ',
+        'lsa': 100,
+        'size': 8
+    }
+    
+    user_req = hi.submit_io_request(stream_id, host_req)
+    
+    assert user_req.stream_id == stream_id
+    assert user_req.type == 'READ'
+    assert user_req.lsa == 100
+    assert user_req.size_in_sectors == 8
+    
+    stream = hi.input_streams[stream_id]
+    assert stream.on_the_fly_requests == 1
+    assert len(stream.waiting_user_requests) == 1
+    assert stream.submission_tail == 1
