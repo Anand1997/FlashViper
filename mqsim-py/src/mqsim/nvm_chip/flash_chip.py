@@ -7,12 +7,12 @@ class ChipStatus:
     BUSY = 1
 
 class FlashChip(SimObject):
-    def __init__(self, obj_id, channel_id, chip_id, 
+    def __init__(self, obj_id, channel_id, local_chip_id, 
                  flash_technology, die_no, planes_per_die,
                  read_latencies, program_latencies, erase_latency):
         super().__init__(obj_id)
         self.channel_id = channel_id
-        self.chip_id = chip_id
+        self.chip_id = local_chip_id
         self.flash_technology = flash_technology
         self.die_no = die_no
         self.planes_per_die = planes_per_die

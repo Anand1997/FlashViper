@@ -28,7 +28,8 @@ def test_host_system_initialization():
     host.attach_ssd_device(ssd_device)
     assert host.ssd_device == ssd_device
     
-    flow = SyntheticIOFlow(0.5, 0, 1000, 42)
+    # def __init__(self, id, read_ratio, start_lsa, end_lsa, seed, queue_depth=1, host_interface=None):
+    flow = SyntheticIOFlow(id="flow1", read_ratio=0.5, start_lsa=0, end_lsa=1000, seed=42)
     host.add_io_flow(flow)
     assert len(host.get_io_flows()) == 1
     assert host.get_io_flows()[0] == flow
