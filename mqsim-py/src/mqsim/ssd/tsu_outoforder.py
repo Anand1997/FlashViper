@@ -1,5 +1,6 @@
 from mqsim.ssd.tsu_base import TSUBase
 from mqsim.utils.signal import Signal
+from mqsim.nvm_chip.flash_chip import ChipStatus
 
 class TSUOutOfOrder(TSUBase):
     def __init__(self, id, channel_count, chip_no_per_channel):
@@ -64,6 +65,9 @@ class TSUOutOfOrder(TSUBase):
         self.service_chip_requests(chip)
 
     def service_chip_requests(self, chip):
+        if chip.status != ChipStatus.IDLE:
+            return
+            
         if not self.service_read_transaction(chip):
             if not self.service_write_transaction(chip):
                 self.service_erase_transaction(chip)

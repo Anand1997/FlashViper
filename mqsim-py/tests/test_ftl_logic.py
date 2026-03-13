@@ -15,6 +15,13 @@ def test_ftl_request_segmentation():
     user_req = UserRequest(stream_id=0, type="READ", lsa=0, size_in_sectors=16)
     
     # 2. Segment the request
+    class MockPhy:
+        def get_chip(self, c, i):
+            class MockChip:
+                def __init__(self):
+                    self.status = 1 # BUSY to avoid further triggers in this simple test
+            return MockChip()
+    ftl.phy = MockPhy()
     transactions = ftl.segment_user_request(user_req)
     
     assert len(transactions) == 2

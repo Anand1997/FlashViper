@@ -6,7 +6,7 @@ class MockHostInterface:
     def __init__(self):
         self.submitted_requests = []
         
-    def submit_io_request(self, req):
+    def submit_io_request(self, stream_id, req):
         self.submitted_requests.append(req)
 
 def test_synthetic_flow_generation():
@@ -18,6 +18,7 @@ def test_synthetic_flow_generation():
     # Setup flow: 50% reads, queue depth of 5
     flow = SyntheticIOFlow(
         id="Flow0",
+        stream_id=0,
         read_ratio=0.5,
         start_lsa=0,
         end_lsa=1000,

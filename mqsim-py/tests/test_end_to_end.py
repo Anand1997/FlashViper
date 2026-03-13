@@ -31,23 +31,21 @@ def test_end_to_end_io_flow():
     stream_id = hi.create_new_stream("HIGH", 0, 500000, 0x1000, 0x2000)
     
     # 3. Setup Workload
+    ftl.phy = phy
     class Linker:
-        def submit_io_request(self, req):
+        def submit_io_request(self, stream_id, req):
             user_req = hi.submit_io_request(stream_id, req)
             transactions = ftl.segment_user_request(user_req)
-            ftl.tsu.prepare_for_transaction_submit()
-            for tr in transactions:
-                tr.address = {"channel": 0, "chip": 0, "die": 0, "plane": 0, "block": 0, "page": 0}
-                ftl.tsu.submit_transaction(tr)
-            ftl.tsu.schedule()
-            
+            # Transactions are already submitted by ftl.segment_user_request in this port
+
             # Initially, the chip is IDLE, so we must trigger the first service manually
             # Subsequent services happen via the on_idle signal
             ftl.tsu.service_chip_requests(phy.get_chip(0, 0))
 
     linker = Linker()
     # Generate 2 requests sequentially
-    flow = SyntheticIOFlow("Flow0", 1.0, 0, 1000, 42, queue_depth=2, host_interface=linker)
+    flow = SyntheticIOFlow("Flow0", stream_id, 1.0, 0, 0, 42, queue_depth=2, total_req_count=2, host_interface=linker)
+    hi.set_io_flow(stream_id, flow)
     
     engine.add_object(flow)
     engine.add_object(phy.get_chip(0, 0))
