@@ -1,14 +1,16 @@
+from mqsim.sim.sim_object import SimObject
 from mqsim.ssd.flash_block_manager import FlashBlockManager
 from mqsim.ssd.mapping_unit import PageLevelAddressMapping
 from mqsim.ssd.tsu_outoforder import TSUOutOfOrder
+from mqsim.ssd.gc_and_wl_unit import GCUnit
 from mqsim.ssd.nvm_transaction import NVMTransaction, TransactionType, TransactionSource
 from mqsim.utils.random_generator import RandomGenerator
 
-class FTL:
-    def __init__(self, channel_no, chip_no_per_channel, die_no_per_chip, 
+class FTL(SimObject):
+    def __init__(self, id, channel_no, chip_no_per_channel, die_no_per_chip, 
                  plane_no_per_die, block_no_per_plane, page_no_per_block, 
                  page_size_in_sectors, over_provisioning_ratio, seed):
-        
+        super().__init__(id)
         self.channel_no = channel_no
         self.chip_no_per_channel = chip_no_per_channel
         self.die_no_per_chip = die_no_per_chip
@@ -35,7 +37,16 @@ class FTL:
         self.address_mapping_unit = PageLevelAddressMapping(no_of_logical_pages)
 
         # 3. Initialize Transaction Scheduling Unit (TSU)
-        self.tsu = TSUOutOfOrder("FTL.TSU", channel_no, chip_no_per_channel)
+        self.tsu = TSUOutOfOrder(f"{id}.TSU", channel_no, chip_no_per_channel)
+
+        # 4. Initialize GC and WL Unit
+        self.gc_and_wl_unit = GCUnit(
+            f"{id}.GCUnit", self.block_manager, self.tsu, "RGA"
+        )
+        self.block_manager.set_gc_unit(self.gc_and_wl_unit)
+
+        self.phy = None
+        self.data_cache_manager = None
 
     def segment_user_request(self, user_request):
         """
@@ -52,8 +63,6 @@ class FTL:
         
         while remaining_size > 0:
             lpa = current_lsa // self.page_size_in_sectors
-            # In MQSim, multiple sectors can be in one transaction if they fit in one page
-            # For simplicity, we create one transaction per page boundary
             sectors_in_this_page = min(remaining_size, 
                                        self.page_size_in_sectors - (current_lsa % self.page_size_in_sectors))
             
@@ -71,3 +80,6 @@ class FTL:
             remaining_size -= sectors_in_this_page
             
         return transactions
+
+    def execute_sim_event(self, event):
+        pass

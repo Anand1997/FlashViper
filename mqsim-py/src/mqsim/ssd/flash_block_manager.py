@@ -24,6 +24,7 @@ class FlashBlockManager:
                  plane_no_per_die, block_no_per_plane, page_no_per_block):
         
         self.page_no_per_block = page_no_per_block
+        self.gc_unit = None
         
         # Initialize the 4D array: Channel -> Chip -> Die -> Plane -> PlaneBookKeeping
         self.plane_manager = [[[[PlaneBookKeeping(block_no_per_plane, page_no_per_block) 
@@ -31,6 +32,9 @@ class FlashBlockManager:
                                 for _ in range(die_no_per_chip)] 
                                for _ in range(chip_no_per_channel)] 
                               for _ in range(channel_count)]
+
+    def set_gc_unit(self, gc_unit):
+        self.gc_unit = gc_unit
 
     def _get_plane_bookkeeping(self, address):
         return self.plane_manager[address["channel"]][address["chip"]][address["die"]][address["plane"]]
