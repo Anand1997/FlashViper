@@ -6,6 +6,18 @@ class ChipStatus:
     IDLE = 0
     BUSY = 1
 
+class DieStatus:
+    IDLE = 0
+    BUSY = 1
+
+class Die:
+    def __init__(self, die_id, planes_per_die):
+        self.die_id = die_id
+        self.planes_per_die = planes_per_die
+        self.status = DieStatus.IDLE
+        self.current_command = None
+        self.on_idle = Signal()
+
 class FlashChip(SimObject):
     def __init__(self, obj_id, channel_id, local_chip_id, 
                  flash_technology, die_no, planes_per_die,
@@ -20,9 +32,16 @@ class FlashChip(SimObject):
         self.program_latencies = program_latencies
         self.erase_latency = erase_latency
         
-        self.status = ChipStatus.IDLE
-        self._current_command = None
+        self.dies = [Die(i, planes_per_die) for i in range(die_no)]
+        
+        # We can still track an overall chip status if needed, but execution is per-die
         self.on_idle = Signal()
+
+    @property
+    def status(self):
+        # A chip is considered completely IDLE only if ALL dies are IDLE
+        # However, for issuing commands, we check the specific Die's status.
+        return ChipStatus.BUSY if any(d.status == DieStatus.BUSY for d in self.dies) else ChipStatus.IDLE
 
     def get_command_execution_latency(self, command_type, page_id):
         latency_type = 0
@@ -47,17 +66,27 @@ class FlashChip(SimObject):
         
         return 0
 
-    def start_command_execution(self, command_type, page_id):
-        self.status = ChipStatus.BUSY
+    def start_command_execution(self, command_type, die_id, page_id):
+        die = self.dies[die_id]
+        if die.status != DieStatus.IDLE:
+            raise RuntimeError(f"Cannot start command on busy die {die_id} of chip {self.id}")
+            
+        die.status = DieStatus.BUSY
         latency = self.get_command_execution_latency(command_type, page_id)
         
         # Schedule completion event
         engine = Engine()
-        engine.register_sim_event(engine.time + latency, self, parameters=command_type)
+        engine.register_sim_event(engine.time + latency, self, parameters={"die_id": die_id, "command_type": command_type})
 
     def execute_sim_event(self, event):
-        # Command finished
-        self.status = ChipStatus.IDLE
-        self._current_command = None
-        # Notify listeners (e.g. TSU)
-        self.on_idle.fire(self)
+        params = event.parameters
+        die_id = params["die_id"]
+        die = self.dies[die_id]
+        
+        # Command finished on this die
+        die.status = DieStatus.IDLE
+        die.current_command = None
+        
+        # Notify listeners (e.g. TSU) that THIS die is now idle
+        # We pass the die_id so the TSU knows which die is free
+        self.on_idle.fire(self, die_id)

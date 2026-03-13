@@ -9,6 +9,7 @@ class MockTransaction:
         self.source = source
         self.address = {"channel": channel, "chip": chip}
         self.related_read = None
+        self.user_request = None
 
 def test_tsu_asynchronous_service():
     engine = Engine()
@@ -21,7 +22,7 @@ def test_tsu_asynchronous_service():
     engine.add_object(chip)
     
     # Connect TSU to chip's on_idle signal
-    chip.on_idle.connect(tsu.service_chip_requests)
+    chip.on_idle.connect(tsu.handle_chip_idle_signal)
     
     # 1. Create two transactions for the same chip
     tx1 = MockTransaction("READ", "USERIO", 0, 0)
@@ -33,9 +34,10 @@ def test_tsu_asynchronous_service():
     tsu.schedule() # Put them in queues
     
     # 2. Manually trigger the first service
-    tsu.service_chip_requests(chip)
+    tsu.service_chip_requests(chip, die_id=0)
     
     assert chip.status == ChipStatus.BUSY
+    assert chip.dies[0].status == ChipStatus.BUSY
     assert len(tsu.user_read_queues[0][0]) == 1 # tx2 is still waiting
     
     # 3. Run simulation. When tx1 finishes, chip fires on_idle, 
@@ -44,5 +46,5 @@ def test_tsu_asynchronous_service():
     
     # Time should be 2000 (1000 for tx1 + 1000 for tx2)
     assert engine.time == 2000
-    assert chip.status == ChipStatus.IDLE
+    assert chip.dies[0].status == ChipStatus.IDLE
     assert len(tsu.user_read_queues[0][0]) == 0 # Both finished

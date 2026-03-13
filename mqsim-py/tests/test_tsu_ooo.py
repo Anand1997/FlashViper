@@ -8,14 +8,21 @@ class MockTransaction:
         self.source = source
         self.address = {"channel": channel, "chip": chip, "page": 0}
         self.related_read = None
+        self.user_request = None
+
+class MockDie:
+    def __init__(self):
+        self.planes_per_die = 2
+        self.status = ChipStatus.IDLE
 
 class MockChip:
     def __init__(self, channel_id, chip_id):
         self.channel_id = channel_id
         self.chip_id = chip_id
         self.status = ChipStatus.IDLE
+        self.dies = [MockDie()]
 
-    def start_command_execution(self, command_type, page_id=0):
+    def start_command_execution(self, command_type, die_id=0, page_id=0):
         pass
 
 def test_tsu_outoforder_queuing():
@@ -51,16 +58,16 @@ def test_tsu_prioritization():
     chip = MockChip(0, 0)
     
     # First service should pick MAPPING read
-    serviced = tsu.service_read_transaction(chip)
+    serviced = tsu.service_read_transaction(chip, die_id=0)
     assert serviced is True
     assert len(tsu.mapping_read_queues[0][0]) == 0 # Popped
     
     # Second should pick GC read (assuming urgent mode is always true in our simple mock)
-    serviced = tsu.service_read_transaction(chip)
+    serviced = tsu.service_read_transaction(chip, die_id=0)
     assert serviced is True
     assert len(tsu.gc_read_queues[0][0]) == 0
     
     # Third should pick USER read
-    serviced = tsu.service_read_transaction(chip)
+    serviced = tsu.service_read_transaction(chip, die_id=0)
     assert serviced is True
     assert len(tsu.user_read_queues[0][0]) == 0

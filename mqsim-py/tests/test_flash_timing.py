@@ -15,7 +15,7 @@ def test_flash_chip_execution_event():
     
     # 1. Start a read command
     # Latency is 1000ns.
-    chip.start_command_execution("READ_PAGE", page_id=0)
+    chip.start_command_execution("READ_PAGE", die_id=0, page_id=0)
     
     assert chip.status == ChipStatus.BUSY
     
