@@ -1,11 +1,7 @@
 from mqsim.ssd.ftl import FTL
-
-class MockHostInterface:
-    def __init__(self):
-        self.pcie_switch = None
-
-class MockCacheManager:
-    pass
+from mqsim.ssd.data_cache_manager import DataCacheManagerSimple, CachingMode
+from mqsim.ssd.host_interface_nvme import HostInterfaceNVMe
+from mqsim.ssd.nvm_phy import NVMPhy
 
 class SSDDevice:
     def __init__(self, parameters, io_flows):
@@ -13,29 +9,76 @@ class SSDDevice:
         self.io_flows = io_flows
         self.memory_type = parameters.memory_type
         self.channel_count = parameters.flash_channel_count
+        self.chip_no_per_channel = getattr(parameters, 'chip_no_per_channel', 4)
         
         # 1. Host Interface
-        self.host_interface = MockHostInterface()
-        
-        # 2. Data Cache Manager
-        self.cache_manager = MockCacheManager()
-        
-        # 3. NVM Firmware (FTL)
-        # Using simplified parameters for this basic porting stage
-        self.firmware = FTL(
-            channel_no=self.channel_count,
-            chip_no_per_channel=getattr(parameters, 'chip_no_per_channel', 4),
-            die_no_per_chip=getattr(parameters.flash_params, 'die_no_per_chip', 2),
-            plane_no_per_die=getattr(parameters.flash_params, 'plane_no_per_die', 2),
-            block_no_per_plane=getattr(parameters.flash_params, 'block_no_per_plane', 2048),
-            page_no_per_block=getattr(parameters.flash_params, 'page_no_per_block', 256),
-            page_size_in_sectors=getattr(parameters.flash_params, 'page_capacity', 8192) // 512,
-            over_provisioning_ratio=getattr(parameters, 'overprovisioning_ratio', 0.07),
-            seed=getattr(parameters, 'seed', 321)
+        # We'll use the real NVMe interface if specified
+        self.host_interface = HostInterfaceNVMe(
+            id="SSDDevice.HostInterface",
+            max_lsa=1024*1024*1024, # Dummy large value or calculated from config
+            submission_queue_depth=parameters.io_queue_depth,
+            completion_queue_depth=parameters.io_queue_depth,
+            no_of_input_streams=len(io_flows) if io_flows else 1,
+            queue_fetch_size=parameters.queue_fetch_size,
+            sectors_per_page=parameters.flash_params.page_capacity // 512
         )
         
-        self.phy = None
-        self.channels = []
+        # 2. NVM Firmware (FTL)
+        self.firmware = FTL(
+            id="SSDDevice.FTL",
+            channel_no=self.channel_count,
+            chip_no_per_channel=self.chip_no_per_channel,
+            die_no_per_chip=parameters.flash_params.die_no_per_chip,
+            plane_no_per_die=parameters.flash_params.plane_no_per_die,
+            block_no_per_plane=parameters.flash_params.block_no_per_plane,
+            page_no_per_block=parameters.flash_params.page_no_per_block,
+            page_size_in_sectors=parameters.flash_params.page_capacity // 512,
+            over_provisioning_ratio=parameters.overprovisioning_ratio,
+            seed=parameters.seed
+        )
+        
+        # 3. NVM PHY
+        read_latencies = [parameters.flash_params.page_read_latency_lsb]
+        program_latencies = [parameters.flash_params.page_program_latency_lsb]
+        
+        self.phy = NVMPhy(
+            id="SSDDevice.PHY",
+            channel_count=self.channel_count,
+            chip_no_per_channel=self.chip_no_per_channel,
+            flash_technology=parameters.flash_params.flash_technology,
+            die_no=parameters.flash_params.die_no_per_chip,
+            plane_no=parameters.flash_params.plane_no_per_die,
+            read_latencies=read_latencies,
+            program_latencies=program_latencies,
+            erase_latency=getattr(parameters.flash_params, 'block_erase_latency', 3800000),
+            tsu=self.firmware.tsu
+        )
+        self.firmware.phy = self.phy
+        self.firmware.gc_and_wl_unit.phy = self.phy
+
+        # 4. Data Cache Manager
+        caching_modes = [CachingMode.WRITE_CACHE] * len(io_flows) if io_flows else [CachingMode.WRITE_CACHE]
+        
+        self.cache_manager = DataCacheManagerSimple(
+            id="SSDDevice.CacheManager",
+            host_interface=self.host_interface,
+            nvm_firmware=self.firmware,
+            total_capacity_in_bytes=parameters.data_cache_capacity,
+            page_capacity_in_bytes=parameters.flash_params.page_capacity,
+            dram_row_size=parameters.data_cache_dram_row_size,
+            dram_data_rate=parameters.data_cache_dram_data_rate,
+            dram_burst_size=parameters.data_cache_dram_data_burst_size,
+            dram_tRCD=parameters.data_cache_dram_tRCD,
+            dram_tCL=parameters.data_cache_dram_tCL,
+            dram_tRP=parameters.data_cache_dram_tRP,
+            caching_mode_per_input_stream=caching_modes,
+            stream_count=len(caching_modes)
+        )
+        
+        self.host_interface.cache_manager = self.cache_manager
+        self.firmware.data_cache_manager = self.cache_manager
+        
+        self.channels = [] # Passively handled by PHY in this port
 
     def attach_to_host(self, pcie_switch):
         self.host_interface.pcie_switch = pcie_switch
