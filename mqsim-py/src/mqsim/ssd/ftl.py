@@ -47,6 +47,11 @@ class FTL(SimObject):
 
         self.phy = None
         self.data_cache_manager = None
+        self.host_interface = None
+
+    def set_host_interface(self, host_interface):
+        self.host_interface = host_interface
+        self.tsu.host_interface = host_interface
 
     def segment_user_request(self, user_request):
         """
@@ -61,6 +66,8 @@ class FTL(SimObject):
         current_lsa = lsa
         remaining_size = size
         
+        self.tsu.prepare_for_transaction_submit()
+        
         while remaining_size > 0:
             lpa = current_lsa // self.page_size_in_sectors
             sectors_in_this_page = min(remaining_size, 
@@ -73,12 +80,53 @@ class FTL(SimObject):
                 lpa=lpa,
                 user_request=user_request
             )
+            
+            # Simple Static Plane Allocation CWDP (Channel-Way-Die-Plane)
+            # Ported simplified allocation from C++
+            channel_id = lpa % self.channel_no
+            chip_id = (lpa // self.channel_no) % self.chip_no_per_channel
+            die_id = (lpa // (self.channel_no * self.chip_no_per_channel)) % self.die_no_per_chip
+            plane_id = (lpa // (self.channel_no * self.chip_no_per_channel * self.die_no_per_chip)) % self.plane_no_per_die
+            
+            tr.address = {
+                "channel": channel_id,
+                "chip": chip_id,
+                "die": die_id,
+                "plane": plane_id,
+                "block": 0, # To be allocated by block manager if write
+                "page": 0
+            }
+            
+            if tr.type == "WRITE":
+                # Allocate a new PPA
+                allocated_addr = self.block_manager.allocate_page_for_user_write(tr.stream_id, tr.address)
+                tr.address = allocated_addr
+                tr.ppa = 0 # Dummy PPA
+                self.address_mapping_unit.update_mapping_info(tr.stream_id, tr.lpa, tr.ppa)
+            else:
+                # Read: Look up PPA
+                tr.ppa = self.address_mapping_unit.get_ppa(tr.stream_id, tr.lpa)
+                if tr.ppa == -1:
+                    # Not written yet, return dummy data (still takes time)
+                    pass
+            
             transactions.append(tr)
             user_request.transaction_list.append(tr)
+            
+            self.tsu.submit_transaction(tr)
             
             current_lsa += sectors_in_this_page
             remaining_size -= sectors_in_this_page
             
+        self.tsu.schedule()
+        
+        # Manually trigger servicing for each channel/chip if they are IDLE
+        for c in range(self.channel_no):
+            for i in range(self.chip_no_per_channel):
+                chip = self.phy.get_chip(c, i)
+                if chip.status == 0: # IDLE
+                    self.tsu.handle_chip_idle_signal(chip)
+                    
         return transactions
 
     def execute_sim_event(self, event):

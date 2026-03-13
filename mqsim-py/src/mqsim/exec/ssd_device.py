@@ -12,10 +12,9 @@ class SSDDevice:
         self.chip_no_per_channel = getattr(parameters, 'chip_no_per_channel', 4)
         
         # 1. Host Interface
-        # We'll use the real NVMe interface if specified
         self.host_interface = HostInterfaceNVMe(
             id="SSDDevice.HostInterface",
-            max_lsa=1024*1024*1024, # Dummy large value or calculated from config
+            max_lsa=1024*1024*1024, 
             submission_queue_depth=parameters.io_queue_depth,
             completion_queue_depth=parameters.io_queue_depth,
             no_of_input_streams=len(io_flows) if io_flows else 1,
@@ -36,10 +35,11 @@ class SSDDevice:
             over_provisioning_ratio=parameters.overprovisioning_ratio,
             seed=parameters.seed
         )
+        self.firmware.set_host_interface(self.host_interface)
         
         # 3. NVM PHY
-        read_latencies = [parameters.flash_params.page_read_latency_lsb]
-        program_latencies = [parameters.flash_params.page_program_latency_lsb]
+        read_latencies = [parameters.flash_params.page_read_latency_lsb, parameters.flash_params.page_read_latency_lsb]
+        program_latencies = [parameters.flash_params.page_program_latency_lsb, parameters.flash_params.page_program_latency_lsb]
         
         self.phy = NVMPhy(
             id="SSDDevice.PHY",
@@ -50,7 +50,7 @@ class SSDDevice:
             plane_no=parameters.flash_params.plane_no_per_die,
             read_latencies=read_latencies,
             program_latencies=program_latencies,
-            erase_latency=getattr(parameters.flash_params, 'block_erase_latency', 3800000),
+            erase_latency=parameters.flash_params.block_erase_latency,
             tsu=self.firmware.tsu
         )
         self.firmware.phy = self.phy
@@ -78,7 +78,7 @@ class SSDDevice:
         self.host_interface.cache_manager = self.cache_manager
         self.firmware.data_cache_manager = self.cache_manager
         
-        self.channels = [] # Passively handled by PHY in this port
+        self.channels = [] 
 
     def attach_to_host(self, pcie_switch):
         self.host_interface.pcie_switch = pcie_switch
