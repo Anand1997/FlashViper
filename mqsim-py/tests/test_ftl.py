@@ -3,6 +3,7 @@ from mqsim.ssd.ftl import FTL
 
 def test_ftl_initialization():
     ftl = FTL(
+        id="TestFTL",
         channel_no=8, 
         chip_no_per_channel=4, 
         die_no_per_chip=2, 

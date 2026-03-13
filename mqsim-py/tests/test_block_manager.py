@@ -38,3 +38,6 @@ def test_flash_block_manager():
     fbm.invalidate_page(plane_addr, block_id=0, page_id=0)
     invalid_count = fbm.get_invalid_page_count(plane_addr, block_id=0)
     assert invalid_count == 1
+
+
+# TODO Add test for diffrent block configurations and edge cases (e.g., full blocks, invalid addresses)

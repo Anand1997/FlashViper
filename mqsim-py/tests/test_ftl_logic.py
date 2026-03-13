@@ -5,6 +5,7 @@ from mqsim.ssd.user_request import UserRequest
 def test_ftl_request_segmentation():
     # Setup FTL with 8 sectors per page
     ftl = FTL(
+        id="TestFTL",
         channel_no=1, chip_no_per_channel=1, die_no_per_chip=1, 
         plane_no_per_die=1, block_no_per_plane=10, page_no_per_block=4, 
         page_size_in_sectors=8, over_provisioning_ratio=0.07, seed=42
