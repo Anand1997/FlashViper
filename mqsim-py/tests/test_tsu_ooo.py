@@ -1,18 +1,22 @@
 import pytest
 from mqsim.ssd.tsu_outoforder import TSUOutOfOrder
+from mqsim.nvm_chip.flash_chip import ChipStatus
 
 class MockTransaction:
     def __init__(self, t_type, source, channel, chip):
         self.type = t_type
         self.source = source
-        self.address = {"channel": channel, "chip": chip}
+        self.address = {"channel": channel, "chip": chip, "page": 0}
         self.related_read = None
 
 class MockChip:
     def __init__(self, channel_id, chip_id):
         self.channel_id = channel_id
         self.chip_id = chip_id
-        self.status = "IDLE"
+        self.status = ChipStatus.IDLE
+
+    def start_command_execution(self, command_type, page_id=0):
+        pass
 
 def test_tsu_outoforder_queuing():
     # Setup TSU: 2 channels, 2 chips per channel
@@ -60,4 +64,3 @@ def test_tsu_prioritization():
     serviced = tsu.service_read_transaction(chip)
     assert serviced is True
     assert len(tsu.user_read_queues[0][0]) == 0
-
