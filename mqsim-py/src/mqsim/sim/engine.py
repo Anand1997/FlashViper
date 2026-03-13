@@ -42,6 +42,10 @@ class Engine:
         heapq.heappush(self._event_list, event)
         return event
 
+    def ignore_sim_event(self, event):
+        if event:
+            event.ignore = True
+
     def start_simulation(self):
         self._started = True
         

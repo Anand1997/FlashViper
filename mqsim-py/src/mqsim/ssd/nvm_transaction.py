@@ -18,3 +18,4 @@ class NVMTransaction:
         self.ppa = ppa
         self.user_request = user_request
         self.address = None # Physical address (channel, chip, die, plane, block, page)
+        self.suspend_required = False

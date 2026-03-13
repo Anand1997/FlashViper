@@ -52,7 +52,9 @@ class SSDDevice:
             read_latencies=read_latencies,
             program_latencies=program_latencies,
             erase_latency=parameters.flash_params.block_erase_latency,
-            tsu=self.firmware.tsu
+            tsu=self.firmware.tsu,
+            suspend_program_latency=getattr(parameters.flash_params, 'suspend_program_latency', 0),
+            suspend_erase_latency=getattr(parameters.flash_params, 'suspend_erase_latency', 0)
         )
         self.firmware.phy = self.phy
         self.firmware.tsu.phy = self.phy

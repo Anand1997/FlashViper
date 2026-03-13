@@ -17,8 +17,10 @@ class TSUOutOfOrder(TSUBase):
         self.gc_erase_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         self.mapping_read_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         
-        # (Chip, Die) -> Active Transaction map
+        # (Chip, Die) -> List of Active Transactions
         self.active_transactions = {}
+        # (Chip, Die) -> List of Suspended Transactions
+        self.suspended_transactions = {}
 
         self.on_transaction_finished = Signal()
         self.host_interface = None # To be linked
@@ -75,13 +77,55 @@ class TSUOutOfOrder(TSUBase):
         self.service_chip_requests(chip, die_id)
 
     def service_chip_requests(self, chip, die_id=0):
-        # Only issue command if the specific die is idle
-        if chip.dies[die_id].status != DieStatus.IDLE:
+        die = chip.dies[die_id]
+        if die.status == DieStatus.BUSY:
+            # Check if we can suspend for an urgent read
+            # In MQSim, only WRITE or ERASE can be suspended by READ
+            active_txs = self.active_transactions.get((chip, die_id))
+            if active_txs and active_txs[0].type in ["WRITE", "ERASE"]:
+                # Check for ready READs
+                queues = [self.mapping_read_queues[chip.channel_id][chip.chip_id],
+                          self.gc_read_queues[chip.channel_id][chip.chip_id],
+                          self.user_read_queues[chip.channel_id][chip.chip_id]]
+                
+                # We only suspend if the new transaction explicitly allows/requests it
+                # or if it is higher priority. For now, simple logic: any read can suspend.
+                # In a real port, we'd check if suspension is supported/enabled.
+                txs = self._find_ready_transactions(queues, die_id, die.planes_per_die)
+                if txs:
+                    # Suspend current
+                    chip.suspend(die_id)
+                    self.suspended_transactions[(chip, die_id)] = active_txs
+                    # Issue the read
+                    self._issue_command_to_chip(chip, txs, die_id)
             return
+
+        # Die is IDLE. 
+        # First priority: resume suspended transactions if no higher priority reads are waiting
+        if (chip, die_id) in self.suspended_transactions:
+            # Check if there are still any pending READs that might have higher priority than resuming
+            # (In MQSim, usually you'd resume if no more suspending reads are left)
+            queues = [self.mapping_read_queues[chip.channel_id][chip.chip_id],
+                      self.gc_read_queues[chip.channel_id][chip.chip_id],
+                      self.user_read_queues[chip.channel_id][chip.chip_id]]
             
+            if not self._any_ready_transaction(queues, die_id):
+                resumed_txs = self.suspended_transactions.pop((chip, die_id))
+                self.active_transactions[(chip, die_id)] = resumed_txs
+                chip.resume(die_id)
+                return
+
+        # Normal scheduling
         if not self.service_read_transaction(chip, die_id):
             if not self.service_write_transaction(chip, die_id):
                 self.service_erase_transaction(chip, die_id)
+
+    def _any_ready_transaction(self, queues, die_id):
+        for queue in queues:
+            for tx in queue:
+                if tx.address.get("die", 0) == die_id and self._transaction_is_ready(tx):
+                    return True
+        return False
 
     def _find_ready_transactions(self, queues, die_id, max_planes):
         """
