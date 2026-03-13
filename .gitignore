@@ -1,3 +1,9 @@
 /MQSim
+/MQSim.exe
+/MQSim.pdb
+/MQSim.lib
+/MQSim.exp
 build/
+__pycache__/
+*.pyc
 

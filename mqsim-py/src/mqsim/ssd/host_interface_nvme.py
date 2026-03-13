@@ -78,8 +78,12 @@ class HostInterfaceNVMe(SimObject):
 
     def finish_user_request(self, user_req):
         """
-        Called by FTL when a user request is finished.
+        Called by FTL or Cache when a user request is finished.
         """
+        if user_req.already_finished:
+            return
+            
+        user_req.already_finished = True
         stream = self.input_streams[user_req.stream_id]
         stream.on_the_fly_requests -= 1
         

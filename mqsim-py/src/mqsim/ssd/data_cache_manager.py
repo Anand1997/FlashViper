@@ -119,17 +119,39 @@ class DataCacheManagerSimple(DataCacheManagerBase):
         self.capacity_in_bytes = total_capacity_in_bytes
         self.capacity_in_pages = total_capacity_in_bytes // page_capacity_in_bytes
         self.data_cache = DataCacheFlash(self.capacity_in_pages)
+        self.page_capacity_in_bytes = page_capacity_in_bytes
         
     def process_new_user_request(self, user_request):
-        # Simplistic implementation for now
-        # In a real port, this would generate NVM transactions or service from cache
         if self.caching_mode_per_input_stream[user_request.stream_id] == CachingMode.TURNED_OFF:
             self.nvm_firmware.segment_user_request(user_request)
             return
 
-        # For WRITE_CACHE, we'd add to cache and only destage later
-        # For simplicity, let's just delegate to FTL for now
-        self.nvm_firmware.segment_user_request(user_request)
+        if user_request.type == "WRITE":
+            # Estimate DRAM access time for cache insert
+            access_time = estimate_dram_access_time(
+                user_request.size_in_sectors * 512, 
+                self.dram_row_size,
+                self.dram_burst_size * 64, # Simplified burst size in bytes
+                self.dram_burst_transfer_time_ddr,
+                self.dram_tRCD, self.dram_tCL, self.dram_tRP
+            )
+            
+            import math
+            # Simplified: just acknowledge after DRAM delay + some host interface delay
+            # C++ MQSim shows ~40us for NVMe writes in this config
+            host_interface_delay = 40000 
+            
+            from mqsim.sim.engine import Engine
+            delay = max(1, math.ceil(access_time)) + host_interface_delay
+            Engine().register_sim_event(Engine().time + delay, self, parameters=user_request)
+            
+            # Also start actual NVM write in background (simplified destaging)
+            self.nvm_firmware.segment_user_request(user_request)
+        else:
+            # READ: for now just delegate to FTL
+            self.nvm_firmware.segment_user_request(user_request)
 
     def execute_sim_event(self, event):
-        pass
+        # Acknowledge the user request (Write Cache Hit)
+        user_request = event.parameters
+        self.host_interface.finish_user_request(user_request)

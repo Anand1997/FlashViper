@@ -119,13 +119,6 @@ class FTL(SimObject):
             remaining_size -= sectors_in_this_page
             
         self.tsu.schedule()
-        
-        # Manually trigger servicing for each channel/chip if they are IDLE
-        for c in range(self.channel_no):
-            for i in range(self.chip_no_per_channel):
-                chip = self.phy.get_chip(c, i)
-                if chip.status == 0: # IDLE
-                    self.tsu.handle_chip_idle_signal(chip)
                     
         return transactions
 

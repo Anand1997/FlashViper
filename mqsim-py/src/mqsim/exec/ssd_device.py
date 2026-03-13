@@ -37,7 +37,8 @@ class SSDDevice:
         )
         self.firmware.set_host_interface(self.host_interface)
         
-        # 3. NVM PHY
+        # Calculate max LSA based on logical pages
+        self.host_interface.max_lsa = self.firmware.address_mapping_unit.no_of_logical_pages * self.firmware.page_size_in_sectors - 1
         read_latencies = [parameters.flash_params.page_read_latency_lsb, parameters.flash_params.page_read_latency_lsb]
         program_latencies = [parameters.flash_params.page_program_latency_lsb, parameters.flash_params.page_program_latency_lsb]
         
@@ -54,6 +55,7 @@ class SSDDevice:
             tsu=self.firmware.tsu
         )
         self.firmware.phy = self.phy
+        self.firmware.tsu.phy = self.phy
         self.firmware.gc_and_wl_unit.phy = self.phy
 
         # 4. Data Cache Manager

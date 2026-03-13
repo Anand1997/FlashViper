@@ -5,6 +5,7 @@ class TSUBase(ABC):
         self.opened_scheduling_reqs = 0
         self.transaction_receive_slots = []
         self.transaction_dispatch_slots = []
+        self.phy = None
 
     def prepare_for_transaction_submit(self):
         self.opened_scheduling_reqs += 1

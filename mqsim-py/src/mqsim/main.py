@@ -69,12 +69,15 @@ def main():
             if hasattr(flow_def, 'read_percentage'):
                 read_ratio = flow_def.read_percentage / 100.0
                 
+                # Apply working set percentage
+                end_lsa = int(ssd.host_interface.max_lsa * (flow_def.working_set_percentage / 100.0))
+                
                 flow = SyntheticIOFlow(
                     id=f"Host.IO_Flow.Synth.No_{j}",
                     stream_id=stream_id,
                     read_ratio=read_ratio,
                     start_lsa=0,
-                    end_lsa=ssd.host_interface.max_lsa,
+                    end_lsa=end_lsa,
                     seed=flow_def.seed,
                     queue_depth=flow_def.average_no_of_reqs_in_queue,
                     stop_time=flow_def.stop_time,

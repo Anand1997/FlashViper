@@ -24,9 +24,11 @@ class TSUOutOfOrder(TSUBase):
         self.host_interface = None # To be linked
 
     def schedule(self):
+        affected_chips = set()
         for trans in self.transaction_receive_slots:
             channel_id = trans.address["channel"]
             chip_id = trans.address["chip"]
+            affected_chips.add((channel_id, chip_id))
             
             if trans.type == "READ":
                 if trans.source == "MAPPING":
@@ -44,6 +46,12 @@ class TSUOutOfOrder(TSUBase):
                 self.gc_erase_queues[channel_id][chip_id].append(trans)
                 
         self.transaction_receive_slots.clear()
+        
+        # Trigger servicing for affected chips
+        if self.phy:
+            for channel_id, chip_id in affected_chips:
+                chip = self.phy.get_chip(channel_id, chip_id)
+                self.service_chip_requests(chip)
 
     def handle_chip_idle_signal(self, chip):
         # 1. Finish the previous transaction if any

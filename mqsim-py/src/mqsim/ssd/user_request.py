@@ -6,6 +6,7 @@ class UserRequest:
         self.size_in_sectors = size_in_sectors
         self.transaction_list = []
         self.sectors_serviced_from_cache = 0
+        self.already_finished = False
         
     @property
     def is_finished(self):
