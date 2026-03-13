@@ -4,6 +4,8 @@ import os
 import xml.etree.ElementTree as ET
 import re
 
+import sys
+
 # Get the project root directory relative to this test file
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(TEST_DIR, "..", ".."))
@@ -36,12 +38,20 @@ def run_cpp_sim(config_path, workload_path):
     # Run in the project root to ensure output files are found where expected
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=PROJECT_ROOT)
     
+    # Save output to file
+    with open(os.path.join(PROJECT_ROOT, "cpp_sim.log"), "w") as f:
+        f.write(f"COMMAND: {' '.join(cmd)}\n")
+        f.write("--- STDOUT ---\n")
+        f.write(result.stdout)
+        f.write("\n--- STDERR ---\n")
+        f.write(result.stderr)
+
     # MQSim C++ creates an output file named workload_filename_scenario_1.xml
     workload_name = os.path.splitext(os.path.basename(workload_path))[0]
     output_xml = os.path.join(PROJECT_ROOT, f"{workload_name}_scenario_1.xml")
     
     if not os.path.exists(output_xml):
-        pytest.fail(f"C++ simulation did not produce {output_xml}")
+        pytest.fail(f"C++ simulation did not produce {output_xml}. Check cpp_sim.log")
         
     tree = ET.parse(output_xml)
     root = tree.getroot()
@@ -67,22 +77,28 @@ def run_python_sim(config_path, workload_path):
     src_dir = os.path.join(PROJECT_ROOT, "mqsim-py", "src")
     env["PYTHONPATH"] = src_dir
     
-    cmd = ["python", main_py, "-i", config_abs, "-w", workload_abs]
+    # Use sys.executable to ensure we use the same python as the test runner
+    cmd = [sys.executable, main_py, "-i", config_abs, "-w", workload_abs]
     result = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=PROJECT_ROOT)
     
+    # Save output to file
+    with open(os.path.join(PROJECT_ROOT, "python_sim.log"), "w") as f:
+        f.write(f"COMMAND: {' '.join(cmd)}\n")
+        f.write("--- STDOUT ---\n")
+        f.write(result.stdout)
+        f.write("\n--- STDERR ---\n")
+        f.write(result.stderr)
+
     if result.returncode != 0:
-        pytest.fail(f"Python simulation failed with error:\n{result.stderr}")
+        pytest.fail(f"Python simulation failed. Check python_sim.log\nError: {result.stderr}")
         
     # Parse metrics from stdout using regex
-    # Example: Flow Host.IO_Flow.Synth.No_0 - total requests generated: 50 total requests serviced: 50
-    #          - device response time: 40 (us)
-    
     stdout = result.stdout
     req_match = re.search(r"total requests serviced: (\d+)", stdout)
     lat_match = re.search(r"device response time: (\d+) \(us\)", stdout)
     
     if not req_match or not lat_match:
-        pytest.fail(f"Could not parse Python simulation results from stdout:\n{stdout}")
+        pytest.fail(f"Could not parse Python simulation results from stdout. Check python_sim.log\nStdout snippet: {stdout[:200]}")
         
     requests = int(req_match.group(1))
     latency = float(lat_match.group(1))
