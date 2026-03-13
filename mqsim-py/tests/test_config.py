@@ -2,12 +2,15 @@ import pytest
 import os
 from mqsim.exec.execution_parameter_set import ExecutionParameterSet
 
+# Get the project root directory relative to this test file
+TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(TEST_DIR, "..", ".."))
+
 def test_parse_ssd_config():
-    # Path to original ssdconfig.xml (one level up from mqsim-py root)
-    config_path = "../ssdconfig.xml"
+    # Path to original ssdconfig.xml
+    config_path = os.path.join(PROJECT_ROOT, "ssdconfig.xml")
     if not os.path.exists(config_path):
-        # Fallback for different execution contexts
-        config_path = "ssdconfig.xml"
+        pytest.fail(f"ssdconfig.xml not found at {config_path}")
     
     params = ExecutionParameterSet()
     params.deserialize(config_path)

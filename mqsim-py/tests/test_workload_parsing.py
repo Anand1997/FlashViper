@@ -2,10 +2,14 @@ import pytest
 import os
 from mqsim.exec.execution_parameter_set import ExecutionParameterSet
 
+# Get the project root directory relative to this test file
+TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(TEST_DIR, "..", ".."))
+
 def test_workload_deserialization():
-    config_path = "../workload.xml"
+    config_path = os.path.join(PROJECT_ROOT, "workload.xml")
     if not os.path.exists(config_path):
-        config_path = "workload.xml"
+        pytest.fail(f"workload.xml not found at {config_path}")
         
     exec_params = ExecutionParameterSet()
     scenarios = exec_params.deserialize_workload(config_path)
