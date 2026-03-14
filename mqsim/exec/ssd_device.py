@@ -43,8 +43,18 @@ class SSDDevice:
         
         # Calculate max LSA based on logical pages
         self.host_interface.max_lsa = self.firmware.address_mapping_unit.no_of_logical_pages * self.firmware.page_size_in_sectors - 1
-        read_latencies = [parameters.flash_params.page_read_latency_lsb, parameters.flash_params.page_read_latency_lsb]
-        program_latencies = [parameters.flash_params.page_program_latency_lsb, parameters.flash_params.page_program_latency_lsb]
+        
+        # Latency sets
+        read_latencies = [
+            parameters.flash_params.page_read_latency_lsb,
+            parameters.flash_params.page_read_latency_csb,
+            parameters.flash_params.page_read_latency_msb
+        ]
+        program_latencies = [
+            parameters.flash_params.page_program_latency_lsb,
+            parameters.flash_params.page_program_latency_csb,
+            parameters.flash_params.page_program_latency_msb
+        ]
         
         self.phy = NVMPhy(
             id="SSDDevice.PHY",

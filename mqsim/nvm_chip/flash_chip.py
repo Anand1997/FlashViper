@@ -51,6 +51,8 @@ class FlashChip(SimObject):
         if self.flash_technology == "MLC":
             latency_type = page_id % 2
         elif self.flash_technology == "TLC":
+            # From MQSim reference:
+            # (pageID <= 5) ? 0 : ((pageID <= 7) ? 1 : (((pageID - 8) >> 1) % 3))
             if page_id <= 5:
                 latency_type = 0
             elif page_id <= 7:
@@ -59,6 +61,9 @@ class FlashChip(SimObject):
                 latency_type = ((page_id - 8) >> 1) % 3
         else: # SLC
             latency_type = 0
+
+        # Safety: ensure latency_type doesn't exceed available slots
+        latency_type = min(latency_type, len(self.read_latencies) - 1)
 
         if "READ" in command_type:
             return self.read_latencies[latency_type]

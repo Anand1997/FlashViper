@@ -4,7 +4,11 @@ class FlashParameterSet:
     def __init__(self):
         self.flash_technology = "SLC"
         self.page_read_latency_lsb = 0
+        self.page_read_latency_csb = 0
+        self.page_read_latency_msb = 0
         self.page_program_latency_lsb = 0
+        self.page_program_latency_csb = 0
+        self.page_program_latency_msb = 0
         self.die_no_per_chip = 2
         self.plane_no_per_die = 2
         self.block_no_per_plane = 2048
@@ -15,7 +19,11 @@ class FlashParameterSet:
     def deserialize(self, node):
         self.flash_technology = node.findtext("Flash_Technology")
         self.page_read_latency_lsb = int(node.findtext("Page_Read_Latency_LSB", "0"))
+        self.page_read_latency_csb = int(node.findtext("Page_Read_Latency_CSB", "0"))
+        self.page_read_latency_msb = int(node.findtext("Page_Read_Latency_MSB", "0"))
         self.page_program_latency_lsb = int(node.findtext("Page_Program_Latency_LSB", "0"))
+        self.page_program_latency_csb = int(node.findtext("Page_Program_Latency_CSB", "0"))
+        self.page_program_latency_msb = int(node.findtext("Page_Program_Latency_MSB", "0"))
         self.die_no_per_chip = int(node.findtext("Die_No_Per_Chip", "2"))
         self.plane_no_per_die = int(node.findtext("Plane_No_Per_Die", "2"))
         self.block_no_per_plane = int(node.findtext("Block_No_Per_Plane", "2048"))
