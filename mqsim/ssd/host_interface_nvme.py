@@ -41,10 +41,10 @@ class HostInterfaceNVMe(SimObject):
         
         self.input_streams = []
         self.cache_manager = None # Will be linked later
+        self.pcie_link = None # Will be linked by HostSystem
         
         # PCIe Latency (simplified MQSim model)
         self.pcie_base_delay = 1000 # 1us
-        self.pcie_bandwidth = 1.0 # GB/s per lane
         
         # WRR Arbitration State
         self.priority_weights = {"URGENT": 1000000, "HIGH": 4, "MEDIUM": 2, "LOW": 1}
@@ -130,7 +130,10 @@ class HostInterfaceNVMe(SimObject):
         
         batch_size = min(len(stream.sq_buffer), self.queue_fetch_size)
         transfer_size = batch_size * 64 
-        pcie_delay = self.pcie_base_delay + int(transfer_size / (self.pcie_bandwidth * 1e9 / 1e9))
+        
+        pcie_delay = self.pcie_base_delay
+        if self.pcie_link:
+            pcie_delay += self.pcie_link.get_transfer_delay(transfer_size)
         
         from mqsim.sim.engine import Engine
         Engine().register_sim_event(Engine().time + pcie_delay, self, 
@@ -147,7 +150,10 @@ class HostInterfaceNVMe(SimObject):
         stream = self.input_streams[user_req.stream_id]
         
         # Write to CQ (SSD action) with PCIe delay
-        pcie_delay = self.pcie_base_delay + int(16 / (self.pcie_bandwidth * 1e9 / 1e9))
+        # NVMe completion is 16 bytes
+        pcie_delay = self.pcie_base_delay
+        if self.pcie_link:
+            pcie_delay += self.pcie_link.get_transfer_delay(16)
         
         from mqsim.sim.engine import Engine
         Engine().register_sim_event(Engine().time + pcie_delay, self, 
