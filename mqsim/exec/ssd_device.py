@@ -66,6 +66,12 @@ class SSDDevice:
         # 4. Data Cache Manager
         caching_modes = [CachingMode.WRITE_CACHE] * len(io_flows) if io_flows else [CachingMode.WRITE_CACHE]
         
+        # Convert string to Enum
+        from mqsim.ssd.data_cache_manager import CacheSharingMode
+        sharing_mode = CacheSharingMode.SHARED
+        if getattr(parameters, 'data_cache_sharing_mode', "SHARED") == "EQUAL_PARTITIONING":
+            sharing_mode = CacheSharingMode.EQUAL_PARTITIONING
+
         self.cache_manager = DataCacheManagerSimple(
             id="SSDDevice.CacheManager",
             host_interface=self.host_interface,
@@ -79,7 +85,8 @@ class SSDDevice:
             dram_tCL=parameters.data_cache_dram_tCL,
             dram_tRP=parameters.data_cache_dram_tRP,
             caching_mode_per_input_stream=caching_modes,
-            stream_count=len(caching_modes)
+            stream_count=len(caching_modes),
+            sharing_mode=sharing_mode
         )
         
         self.host_interface.cache_manager = self.cache_manager

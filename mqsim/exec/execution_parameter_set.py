@@ -42,6 +42,7 @@ class DeviceParameterSet:
         self.queue_fetch_size = 512
         self.cmt_capacity = 1024 
         self.plane_allocation_scheme = "CWDP"
+        self.data_cache_sharing_mode = "SHARED"
 
     def deserialize(self, node):
         self.memory_type = node.findtext("Memory_Type")
@@ -51,6 +52,7 @@ class DeviceParameterSet:
         self.overprovisioning_ratio = float(node.findtext("Overprovisioning_Ratio", "0.07"))
         
         self.data_cache_capacity = int(node.findtext("Data_Cache_Capacity", "268435456"))
+        self.data_cache_sharing_mode = node.findtext("Data_Cache_Sharing_Mode", "SHARED")
         self.data_cache_dram_row_size = int(node.findtext("Data_Cache_DRAM_Row_Size", "8192"))
         self.data_cache_dram_data_rate = int(node.findtext("Data_Cache_DRAM_Data_Rate", "100"))
         # Note: XML has typo "Data_Cache_DRAM_Data_Busrt_Size"

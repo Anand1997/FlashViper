@@ -71,38 +71,52 @@ class DataCacheSlot:
         self.timestamp = 0
 
 class DataCacheFlash:
-    def __init__(self, capacity_in_pages):
+    def __init__(self, capacity_in_pages, stream_count=1, sharing_mode=CacheSharingMode.SHARED):
         self.capacity_in_pages = capacity_in_pages
-        self.slots = {} # LPN -> DataCacheSlot
-        self.lru_list = [] # List of LPNs
+        self.stream_count = stream_count
+        self.sharing_mode = sharing_mode
         
-    def exists(self, lpn):
-        return lpn in self.slots
+        if sharing_mode == CacheSharingMode.EQUAL_PARTITIONING:
+            self.partition_capacity = capacity_in_pages // stream_count
+            self.slots = [{} for _ in range(stream_count)] # LPN -> DataCacheSlot
+            self.lru_list = [[] for _ in range(stream_count)]
+        else:
+            self.slots = [{}] # Index 0 is shared
+            self.lru_list = [[]]
         
-    def is_full(self):
-        return len(self.slots) >= self.capacity_in_pages
+    def exists(self, lpn, stream_id=0):
+        pool_idx = stream_id if self.sharing_mode == CacheSharingMode.EQUAL_PARTITIONING else 0
+        return lpn in self.slots[pool_idx]
         
-    def get_slot(self, lpn):
-        if lpn in self.slots:
+    def is_full(self, stream_id=0):
+        pool_idx = stream_id if self.sharing_mode == CacheSharingMode.EQUAL_PARTITIONING else 0
+        capacity = self.partition_capacity if self.sharing_mode == CacheSharingMode.EQUAL_PARTITIONING else self.capacity_in_pages
+        return len(self.slots[pool_idx]) >= capacity
+        
+    def get_slot(self, lpn, stream_id=0):
+        pool_idx = stream_id if self.sharing_mode == CacheSharingMode.EQUAL_PARTITIONING else 0
+        if lpn in self.slots[pool_idx]:
             # Move to end of LRU
-            self.lru_list.remove(lpn)
-            self.lru_list.append(lpn)
-            return self.slots[lpn]
+            self.lru_list[pool_idx].remove(lpn)
+            self.lru_list[pool_idx].append(lpn)
+            return self.slots[pool_idx][lpn]
         return None
         
-    def insert(self, lpn, status):
-        if self.is_full():
-            self.evict_lru()
+    def insert(self, lpn, status, stream_id=0):
+        pool_idx = stream_id if self.sharing_mode == CacheSharingMode.EQUAL_PARTITIONING else 0
+        if self.is_full(stream_id):
+            self.evict_lru(stream_id)
         slot = DataCacheSlot(lpn, status)
-        self.slots[lpn] = slot
-        self.lru_list.append(lpn)
+        self.slots[pool_idx][lpn] = slot
+        self.lru_list[pool_idx].append(lpn)
         return slot
         
-    def evict_lru(self):
-        if not self.lru_list:
+    def evict_lru(self, stream_id=0):
+        pool_idx = stream_id if self.sharing_mode == CacheSharingMode.EQUAL_PARTITIONING else 0
+        if not self.lru_list[pool_idx]:
             return None
-        lpn_to_evict = self.lru_list.pop(0)
-        evicted_slot = self.slots.pop(lpn_to_evict)
+        lpn_to_evict = self.lru_list[pool_idx].pop(0)
+        evicted_slot = self.slots[pool_idx].pop(lpn_to_evict)
         return evicted_slot
 
 class DataCacheManagerSimple(DataCacheManagerBase):
@@ -110,22 +124,25 @@ class DataCacheManagerSimple(DataCacheManagerBase):
                  total_capacity_in_bytes, page_capacity_in_bytes,
                  dram_row_size, dram_data_rate, dram_burst_size, 
                  dram_tRCD, dram_tCL, dram_tRP,
-                 caching_mode_per_input_stream, stream_count):
+                 caching_mode_per_input_stream, stream_count, sharing_mode=CacheSharingMode.SHARED):
         super().__init__(id, host_interface, nvm_firmware, 
                          dram_row_size, dram_data_rate, dram_burst_size, 
                          dram_tRCD, dram_tCL, dram_tRP,
-                         caching_mode_per_input_stream, CacheSharingMode.SHARED, stream_count)
+                         caching_mode_per_input_stream, sharing_mode, stream_count)
         
         self.capacity_in_bytes = total_capacity_in_bytes
         self.capacity_in_pages = total_capacity_in_bytes // page_capacity_in_bytes
-        self.data_cache = DataCacheFlash(self.capacity_in_pages)
+        self.data_cache = DataCacheFlash(self.capacity_in_pages, stream_count, sharing_mode)
         self.page_capacity_in_bytes = page_capacity_in_bytes
         
     def process_new_user_request(self, user_request):
         if self.caching_mode_per_input_stream[user_request.stream_id] == CachingMode.TURNED_OFF:
-            self.nvm_firmware.segment_user_request(user_request)
+            # Delay FTL call slightly to avoid instant feedback loop in same sim time
+            from mqsim.sim.engine import Engine
+            Engine().register_sim_event(Engine().time + 1, self.nvm_firmware, parameters=user_request, type="SEGMENT")
             return
 
+        from mqsim.sim.engine import Engine
         if user_request.type == "WRITE":
             # Estimate DRAM access time for cache insert
             access_time = estimate_dram_access_time(
@@ -138,18 +155,17 @@ class DataCacheManagerSimple(DataCacheManagerBase):
             
             import math
             # Simplified: just acknowledge after DRAM delay + some host interface delay
-            # C++ MQSim shows ~40us for NVMe writes in this config
             host_interface_delay = 40000 
             
-            from mqsim.sim.engine import Engine
             delay = max(1, math.ceil(access_time)) + host_interface_delay
+            # Acknowledge user request after delay
             Engine().register_sim_event(Engine().time + delay, self, parameters=user_request)
             
-            # Also start actual NVM write in background (simplified destaging)
-            self.nvm_firmware.segment_user_request(user_request)
+            # Start actual NVM write after a small delay to avoid recursion
+            Engine().register_sim_event(Engine().time + 1, self.nvm_firmware, parameters=user_request, type="SEGMENT")
         else:
-            # READ: for now just delegate to FTL
-            self.nvm_firmware.segment_user_request(user_request)
+            # READ: for now just delegate to FTL with small delay
+            Engine().register_sim_event(Engine().time + 1, self.nvm_firmware, parameters=user_request, type="SEGMENT")
 
     def execute_sim_event(self, event):
         # Acknowledge the user request (Write Cache Hit)
