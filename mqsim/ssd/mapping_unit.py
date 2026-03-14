@@ -91,10 +91,11 @@ class AddressMappingDomain:
             self.cmt.insert(lpa, ppa, dirty=True)
 
 class PageLevelAddressMapping:
-    def __init__(self, no_of_logical_pages, cmt_capacity=1024, stream_count=1, ideal=False):
+    def __init__(self, no_of_logical_pages, cmt_capacity=1024, stream_count=1, ideal=False, scheme="CWDP"):
         self.no_of_logical_pages = no_of_logical_pages
         self.cmt_capacity = cmt_capacity
         self.ideal = ideal
+        self.scheme = scheme
         
         # Support multiple domains for multi-stream SSDs
         self.domains = [AddressMappingDomain(cmt_capacity, no_of_logical_pages) for _ in range(stream_count)]
@@ -109,6 +110,39 @@ class PageLevelAddressMapping:
         if self.ideal:
             return True
         return self.domains[stream_id].cmt.exists(lpa)
+
+    def get_physical_address(self, lpa, channel_no, chip_no, die_no, plane_no):
+        """
+        Calculates physical address components based on the allocation scheme.
+        Common MQSim schemes: CWDP, CDWP, WDCP, etc.
+        """
+        if self.scheme == "CWDP":
+            channel_id = lpa % channel_no
+            chip_id = (lpa // channel_no) % chip_no
+            die_id = (lpa // (channel_no * chip_no)) % die_no
+            plane_id = (lpa // (channel_no * chip_no * die_no)) % plane_no
+        elif self.scheme == "CDWP":
+            channel_id = lpa % channel_no
+            die_id = (lpa // channel_no) % die_no
+            chip_id = (lpa // (channel_no * die_no)) % chip_no
+            plane_id = (lpa // (channel_no * die_no * chip_no)) % plane_no
+        elif self.scheme == "WDCP":
+            chip_id = lpa % chip_no
+            die_id = (lpa // chip_no) % die_no
+            channel_id = (lpa // (chip_no * die_no)) % channel_no
+            plane_id = (lpa // (chip_no * die_no * channel_no)) % plane_no
+        else: # Default to CWDP
+            channel_id = lpa % channel_no
+            chip_id = (lpa // channel_no) % chip_no
+            die_id = (lpa // (channel_no * chip_no)) % die_no
+            plane_id = (lpa // (channel_no * chip_no * die_no)) % plane_no
+            
+        return {
+            "channel": channel_id,
+            "chip": chip_id,
+            "die": die_id,
+            "plane": plane_id
+        }
 
     def allocate_page_for_translation_write(self, stream_id, lpa):
         # This will be called by FTL when a dirty CMT entry is evicted

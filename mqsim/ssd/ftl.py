@@ -10,7 +10,7 @@ class FTL(SimObject):
     def __init__(self, id, channel_no, chip_no_per_channel, die_no_per_chip, 
                  plane_no_per_die, block_no_per_plane, page_no_per_block, 
                  page_size_in_sectors, over_provisioning_ratio, seed,
-                 cmt_capacity=1024, stream_count=1):
+                 cmt_capacity=1024, stream_count=1, scheme="CWDP"):
         super().__init__(id)
         self.channel_no = channel_no
         self.chip_no_per_channel = chip_no_per_channel
@@ -35,7 +35,7 @@ class FTL(SimObject):
                                 block_no_per_plane * page_no_per_block)
         
         no_of_logical_pages = int(total_physical_pages * (1.0 - over_provisioning_ratio))
-        self.address_mapping_unit = PageLevelAddressMapping(no_of_logical_pages, cmt_capacity, stream_count)
+        self.address_mapping_unit = PageLevelAddressMapping(no_of_logical_pages, cmt_capacity, stream_count, scheme=scheme)
 
         # 3. Initialize Transaction Scheduling Unit (TSU)
         self.tsu = TSUOutOfOrder(f"{id}.TSU", channel_no, chip_no_per_channel)
@@ -102,18 +102,10 @@ class FTL(SimObject):
             target_lpas = random.sample(range(0, working_set_pages), pages_to_write)
         
         for lpa in target_lpas:
-            # Static allocation to find a plane
-            channel_id = lpa % self.channel_no
-            chip_id = (lpa // self.channel_no) % self.chip_no_per_channel
-            die_id = (lpa // (self.channel_no * self.chip_no_per_channel)) % self.die_no_per_chip
-            plane_id = (lpa // (self.channel_no * self.chip_no_per_channel * self.die_no_per_chip)) % self.plane_no_per_die
-            
-            address = {
-                "channel": channel_id,
-                "chip": chip_id,
-                "die": die_id,
-                "plane": plane_id
-            }
+            # Use configurable allocation scheme
+            address = self.address_mapping_unit.get_physical_address(
+                lpa, self.channel_no, self.chip_no_per_channel, self.die_no_per_chip, self.plane_no_per_die
+            )
             
             # Allocate physical page
             allocated_addr = self.block_manager.allocate_page_for_preconditioning(stream_id, address)
@@ -121,28 +113,16 @@ class FTL(SimObject):
             # Check for overwrite and invalidate old page
             old_ppa = self.address_mapping_unit.get_ppa(stream_id, lpa)
             if old_ppa != -1:
-                # In this simplified model, PPA is not a direct physical address yet
-                # We'd need a way to translate PPA to address or store address in GMT.
-                # For now, let's assume PPA 0 is dummy and skip invalidation
-                # OR improve GMT to store full address.
                 pass
 
             # Update mapping
             self.address_mapping_unit.domains[stream_id].update_mapping_info_for_preconditioning(lpa, 0) # Dummy PPA
 
     def allocate_page_for_translation_write(self, stream_id, lpa):
-        # Find a suitable plane (Static allocation)
-        channel_id = lpa % self.channel_no
-        chip_id = (lpa // self.channel_no) % self.chip_no_per_channel
-        die_id = (lpa // (self.channel_no * self.chip_no_per_channel)) % self.die_no_per_chip
-        plane_id = (lpa // (self.channel_no * self.chip_no_per_channel * self.die_no_per_chip)) % self.plane_no_per_die
-        
-        target_addr = {
-            "channel": channel_id,
-            "chip": chip_id,
-            "die": die_id,
-            "plane": plane_id
-        }
+        # Use configurable allocation scheme
+        target_addr = self.address_mapping_unit.get_physical_address(
+            lpa, self.channel_no, self.chip_no_per_channel, self.die_no_per_chip, self.plane_no_per_die
+        )
         
         return self.block_manager.allocate_page_for_translation_write(stream_id, target_addr)
 
@@ -188,13 +168,11 @@ class FTL(SimObject):
                         source=TransactionSource.MAPPING,
                         lpa=tr.lpa
                     )
-                    # For mapping pages, we use a different allocation or static 
-                    # Simplified: same static plane as data
-                    m_channel = tr.lpa % self.channel_no
-                    m_chip = (tr.lpa // self.channel_no) % self.chip_no_per_channel
-                    mapping_tr.address = {
-                        "channel": m_channel, "chip": m_chip, "die": 0, "plane": 0, "block": 0, "page": 0
-                    }
+                    # For mapping pages, we use the same scheme
+                    mapping_tr.address = self.address_mapping_unit.get_physical_address(
+                        tr.lpa, self.channel_no, self.chip_no_per_channel, self.die_no_per_chip, self.plane_no_per_die
+                    )
+                    mapping_tr.address.update({"block": 0, "page": 0})
                     
                     # Handle Eviction if CMT is full
                     if len(domain.cmt.slots) >= domain.cmt.capacity:
@@ -216,18 +194,10 @@ class FTL(SimObject):
                 tr.suspend_required = True # Mark that it shouldn't be scheduled yet
             
             # 2. Address Allocation
-            channel_id = lpa % self.channel_no
-            chip_id = (lpa // self.channel_no) % self.chip_no_per_channel
-            die_id = (lpa // (self.channel_no * self.chip_no_per_channel)) % self.die_no_per_chip
-            plane_id = (lpa // (self.channel_no * self.chip_no_per_channel * self.die_no_per_chip)) % self.plane_no_per_die
-            
-            tr.address = {
-                "channel": channel_id,
-                "chip": chip_id,
-                "die": die_id,
-                "plane": plane_id,
-                "block": 0, "page": 0
-            }
+            tr.address = self.address_mapping_unit.get_physical_address(
+                lpa, self.channel_no, self.chip_no_per_channel, self.die_no_per_chip, self.plane_no_per_die
+            )
+            tr.address.update({"block": 0, "page": 0})
             
             if tr.type == "WRITE":
                 allocated_addr = self.block_manager.allocate_page_for_user_write(tr.stream_id, tr.address)

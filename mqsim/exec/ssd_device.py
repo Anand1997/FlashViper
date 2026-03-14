@@ -35,7 +35,8 @@ class SSDDevice:
             over_provisioning_ratio=parameters.overprovisioning_ratio,
             seed=parameters.seed,
             cmt_capacity=parameters.cmt_capacity,
-            stream_count=len(io_flows) if io_flows else 1
+            stream_count=len(io_flows) if io_flows else 1,
+            scheme=parameters.plane_allocation_scheme
         )
         self.firmware.set_host_interface(self.host_interface)
         
