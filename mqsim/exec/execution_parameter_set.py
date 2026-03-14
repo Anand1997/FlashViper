@@ -40,6 +40,7 @@ class DeviceParameterSet:
         self.data_cache_dram_tRP = 13
         self.io_queue_depth = 65535
         self.queue_fetch_size = 512
+        self.cmt_capacity = 1024 # In entries or bytes? MQSim C++ says bytes.
 
     def deserialize(self, node):
         self.memory_type = node.findtext("Memory_Type")
@@ -59,6 +60,7 @@ class DeviceParameterSet:
         
         self.io_queue_depth = int(node.findtext("IO_Queue_Depth", "65535"))
         self.queue_fetch_size = int(node.findtext("Queue_Fetch_Size", "512"))
+        self.cmt_capacity = int(node.findtext("CMT_Capacity", "1024"))
         
         flash_node = node.find("Flash_Parameter_Set")
         if flash_node is not None:

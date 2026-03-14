@@ -33,7 +33,9 @@ class SSDDevice:
             page_no_per_block=parameters.flash_params.page_no_per_block,
             page_size_in_sectors=parameters.flash_params.page_capacity // 512,
             over_provisioning_ratio=parameters.overprovisioning_ratio,
-            seed=parameters.seed
+            seed=parameters.seed,
+            cmt_capacity=parameters.cmt_capacity,
+            stream_count=len(io_flows) if io_flows else 1
         )
         self.firmware.set_host_interface(self.host_interface)
         
