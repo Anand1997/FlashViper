@@ -11,11 +11,30 @@ class GCTransaction:
         self.page_movement_activities = []
 
 class GCUnit(SimObject):
-    def __init__(self, id, block_manager, tsu=None, block_selection_policy="GREEDY"):
+    def __init__(self, id, block_manager, tsu=None, 
+                 block_selection_policy="GREEDY",
+                 gc_threshold=0.1, gc_hard_threshold=0.05,
+                 rga_set_size=8, seed=432):
         super().__init__(id)
         self.block_manager = block_manager
         self.tsu = tsu
         self.block_selection_policy = block_selection_policy
+        self.gc_threshold = gc_threshold # Ratio of free blocks
+        self.gc_hard_threshold = gc_hard_threshold
+        self.rga_set_size = rga_set_size
+        import random
+        self.rng = random.Random(seed)
+        
+        # Track ongoing GC operations to manage "urgent" mode
+        self.ongoing_gc_per_plane = {} # Plane -> count
+
+    def is_urgent(self, plane_address):
+        plane_record = self.block_manager._get_plane_bookkeeping(plane_address)
+        free_blocks = len(plane_record.free_block_pool)
+        total_blocks = len(plane_record.blocks)
+        
+        # Urgent if below hard threshold
+        return free_blocks < (total_blocks * self.gc_hard_threshold)
 
     def select_victim_block(self, plane_address):
         plane_record = self.block_manager._get_plane_bookkeeping(plane_address)
@@ -23,26 +42,54 @@ class GCUnit(SimObject):
         victim_block_id = -1
         max_invalid_pages = -1
         
+        blocks_to_check = []
         if self.block_selection_policy == "GREEDY":
-            for block in plane_record.blocks:
-                if plane_record.data_wf and block.block_id == plane_record.data_wf.block_id:
-                    continue
+            blocks_to_check = plane_record.blocks
+        elif self.block_selection_policy == "RGA":
+            # Randomly select a subset of blocks that are not free and not write frontiers
+            potential_blocks = [b for b in plane_record.blocks 
+                               if b.block_id not in plane_record.free_block_pool]
+            if plane_record.data_wf:
+                potential_blocks = [b for b in potential_blocks if b.block_id != plane_record.data_wf.block_id]
+            if plane_record.translation_wf:
+                potential_blocks = [b for b in potential_blocks if b.block_id != plane_record.translation_wf.block_id]
                 
-                if block.block_id in plane_record.free_block_pool:
-                    continue
+            if len(potential_blocks) > self.rga_set_size:
+                blocks_to_check = self.rng.sample(potential_blocks, self.rga_set_size)
+            else:
+                blocks_to_check = potential_blocks
 
-                if block.invalid_page_count > max_invalid_pages:
-                    max_invalid_pages = block.invalid_page_count
-                    victim_block_id = block.block_id
+        for block in blocks_to_check:
+            # 1. Skip if it's the current write frontier
+            if plane_record.data_wf and block.block_id == plane_record.data_wf.block_id:
+                continue
+            if plane_record.translation_wf and block.block_id == plane_record.translation_wf.block_id:
+                continue
+            
+            # 2. Skip if it's currently in the free pool
+            if block.block_id in plane_record.free_block_pool:
+                continue
+
+            # 3. Greedy part: select block with most invalid pages
+            if block.invalid_page_count > max_invalid_pages:
+                max_invalid_pages = block.invalid_page_count
+                victim_block_id = block.block_id
                     
         return victim_block_id
 
     def check_gc_required(self, plane_address):
+        plane_record = self.block_manager._get_plane_bookkeeping(plane_address)
+        free_blocks = len(plane_record.free_block_pool)
+        total_blocks = len(plane_record.blocks)
+        
+        # Threshold-based trigger
+        if free_blocks > (total_blocks * self.gc_threshold):
+            return None
+
         victim_block_id = self.select_victim_block(plane_address)
         if victim_block_id == -1:
-            return
+            return None
             
-        plane_record = self.block_manager._get_plane_bookkeeping(plane_address)
         block = plane_record.blocks[victim_block_id]
         
         # Only execute GC if we have a TSU attached

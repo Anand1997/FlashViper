@@ -172,9 +172,24 @@ class TSUOutOfOrder(TSUBase):
         channel_id = chip.channel_id
         chip_id = chip.chip_id
         
-        queues = [self.mapping_read_queues[channel_id][chip_id],
-                  self.gc_read_queues[channel_id][chip_id],
-                  self.user_read_queues[channel_id][chip_id]]
+        # Priority: Mapping > GC (if urgent) > User > GC (if not urgent)
+        # MQSim often prioritizes GC reads even if not urgent to free up blocks
+        
+        is_urgent = False
+        if self.ftl and self.ftl.gc_and_wl_unit:
+            # Check any plane in this die
+            is_urgent = self.ftl.gc_and_wl_unit.is_urgent({
+                "channel": channel_id, "chip": chip_id, "die": die_id, "plane": 0
+            })
+
+        if is_urgent:
+            queues = [self.mapping_read_queues[channel_id][chip_id],
+                      self.gc_read_queues[channel_id][chip_id],
+                      self.user_read_queues[channel_id][chip_id]]
+        else:
+            queues = [self.mapping_read_queues[channel_id][chip_id],
+                      self.user_read_queues[channel_id][chip_id],
+                      self.gc_read_queues[channel_id][chip_id]]
                   
         txs = self._find_ready_transactions(queues, die_id, chip.dies[die_id].planes_per_die)
         if txs:
@@ -186,9 +201,20 @@ class TSUOutOfOrder(TSUBase):
         channel_id = chip.channel_id
         chip_id = chip.chip_id
         
-        queues = [self.mapping_write_queues[channel_id][chip_id],
-                  self.gc_write_queues[channel_id][chip_id],
-                  self.user_write_queues[channel_id][chip_id]]
+        is_urgent = False
+        if self.ftl and self.ftl.gc_and_wl_unit:
+            is_urgent = self.ftl.gc_and_wl_unit.is_urgent({
+                "channel": channel_id, "chip": chip_id, "die": die_id, "plane": 0
+            })
+
+        if is_urgent:
+            queues = [self.mapping_write_queues[channel_id][chip_id],
+                      self.gc_write_queues[channel_id][chip_id],
+                      self.user_write_queues[channel_id][chip_id]]
+        else:
+            queues = [self.mapping_write_queues[channel_id][chip_id],
+                      self.user_write_queues[channel_id][chip_id],
+                      self.gc_write_queues[channel_id][chip_id]]
                   
         txs = self._find_ready_transactions(queues, die_id, chip.dies[die_id].planes_per_die)
         if txs:

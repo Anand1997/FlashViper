@@ -43,7 +43,9 @@ class FTL(SimObject):
 
         # 4. Initialize GC and WL Unit
         self.gc_and_wl_unit = GCUnit(
-            f"{id}.GCUnit", self.block_manager, self.tsu, "RGA"
+            f"{id}.GCUnit", self.block_manager, self.tsu, 
+            block_selection_policy="RGA",
+            gc_threshold=0.1, gc_hard_threshold=0.05
         )
         self.block_manager.set_gc_unit(self.gc_and_wl_unit)
 
