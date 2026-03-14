@@ -50,11 +50,14 @@ def main():
         # 3. Instantiate Host System
         host = HostSystem(
             parameters=exec_params.host_config,
-            preconditioning_required=False,
+            preconditioning_required=False, # We check it below
             ssd_host_interface=ssd.host_interface
         )
         host.attach_ssd_device(ssd)
         ssd.attach_to_host(host.pcie_switch)
+        
+        # Preconditioning
+        ssd.perform_preconditioning(scenario.flow_definitions)
         
         # 4. Create IO Flows based on scenario definitions
         for j, flow_def in enumerate(scenario.flow_definitions):

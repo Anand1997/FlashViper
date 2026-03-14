@@ -55,6 +55,44 @@ class FTL(SimObject):
         self.host_interface = host_interface
         self.tsu.host_interface = host_interface
 
+    def perform_preconditioning(self, occupancy_ratio, stream_id):
+        """
+        Fills the mapping table and physical blocks to reach target occupancy.
+        Bypasses TSU and PHY for speed.
+        """
+        if occupancy_ratio <= 0:
+            return
+            
+        no_of_logical_pages = self.address_mapping_unit.no_of_logical_pages
+        pages_to_write = int(no_of_logical_pages * occupancy_ratio)
+        
+        print(f"Preconditioning Stream {stream_id}: Writing {pages_to_write} pages ({occupancy_ratio*100}% occupancy)")
+        
+        # Use a random sample of LPAs
+        import random
+        all_lpas = list(range(no_of_logical_pages))
+        target_lpas = random.sample(all_lpas, pages_to_write)
+        
+        for lpa in target_lpas:
+            # Static allocation to find a plane
+            channel_id = lpa % self.channel_no
+            chip_id = (lpa // self.channel_no) % self.chip_no_per_channel
+            die_id = (lpa // (self.channel_no * self.chip_no_per_channel)) % self.die_no_per_chip
+            plane_id = (lpa // (self.channel_no * self.chip_no_per_channel * self.die_no_per_chip)) % self.plane_no_per_die
+            
+            address = {
+                "channel": channel_id,
+                "chip": chip_id,
+                "die": die_id,
+                "plane": plane_id
+            }
+            
+            # Allocate physical page
+            allocated_addr = self.block_manager.allocate_page_for_preconditioning(stream_id, address)
+            
+            # Update mapping
+            self.address_mapping_unit.domains[stream_id].update_mapping_info_for_preconditioning(lpa, 0) # Dummy PPA
+
     def allocate_page_for_translation_write(self, stream_id, lpa):
         # Find a suitable plane (Static allocation)
         channel_id = lpa % self.channel_no

@@ -88,3 +88,9 @@ class SSDDevice:
 
     def attach_to_host(self, pcie_switch):
         self.host_interface.pcie_switch = pcie_switch
+
+    def perform_preconditioning(self, io_flows):
+        for i, flow in enumerate(io_flows):
+            if hasattr(flow, 'initial_occupancy_percentage'):
+                occupancy_ratio = flow.initial_occupancy_percentage / 100.0
+                self.firmware.perform_preconditioning(occupancy_ratio, i)

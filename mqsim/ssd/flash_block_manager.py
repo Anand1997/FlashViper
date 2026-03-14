@@ -41,6 +41,27 @@ class FlashBlockManager:
     def _get_plane_bookkeeping(self, address):
         return self.plane_manager[address["channel"]][address["chip"]][address["die"]][address["plane"]]
 
+    def allocate_page_for_preconditioning(self, stream_id, address):
+        plane_record = self._get_plane_bookkeeping(address)
+        
+        # Similar to user write, but we don't care about which block it goes to as much
+        # as long as we fill up the physical space.
+        if plane_record.data_wf is None or plane_record.data_wf.current_page_write_index == self.page_no_per_block:
+            plane_record.data_wf = plane_record.get_free_block()
+        
+        wf = plane_record.data_wf
+        allocated_page_id = wf.current_page_write_index
+        wf.current_page_write_index += 1
+        
+        return {
+            "channel": address["channel"],
+            "chip": address["chip"],
+            "die": address["die"],
+            "plane": address["plane"],
+            "block": wf.block_id,
+            "page": allocated_page_id
+        }
+
     def allocate_page_for_translation_write(self, stream_id, address):
         plane_record = self._get_plane_bookkeeping(address)
         

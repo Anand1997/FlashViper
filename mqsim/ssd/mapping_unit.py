@@ -74,6 +74,14 @@ class AddressMappingDomain:
             return self.cmt.retrieve_ppa(lpa)
         return -1
 
+    def update_mapping_info_for_preconditioning(self, lpa, ppa):
+        self.gmt[lpa] = ppa
+        # During preconditioning, we assume mapping is ideal/already persistent
+        # and doesn't need to be in CMT necessarily unless we want to simulate 
+        # it being there. In MQSim, it typically just populates GMT.
+        # But we can insert into CMT to make it "hot".
+        self.cmt.insert(lpa, ppa, dirty=False)
+
     def update_mapping_info(self, lpa, ppa, ideal=False):
         if lpa >= self.no_of_logical_pages:
             raise ValueError(f"LPA {lpa} exceeds logical capacity {self.no_of_logical_pages}")
