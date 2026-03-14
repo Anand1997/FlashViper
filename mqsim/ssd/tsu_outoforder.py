@@ -10,6 +10,9 @@ class TSUOutOfOrder(TSUBase):
         self.chip_no_per_channel = chip_no_per_channel
         self.stream_count = stream_count
         
+        self.program_suspension_enabled = False
+        self.erase_suspension_enabled = False
+        
         # User queues: [Channel][Chip][Stream]
         self.user_read_queues = [[[[] for _ in range(stream_count)] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         self.user_write_queues = [[[[] for _ in range(stream_count)] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
@@ -222,15 +225,33 @@ class TSUOutOfOrder(TSUBase):
     def service_chip_requests(self, chip, die_id=0):
         die = chip.dies[die_id]
         if die.status == DieStatus.BUSY:
+            # Check if we can suspend for an urgent read
+            active_txs = self.active_transactions.get((chip, die_id))
+            if not active_txs:
+                return
+                
+            can_suspend = (active_txs[0].type == "WRITE" and self.program_suspension_enabled) or \
+                          (active_txs[0].type == "ERASE" and self.erase_suspension_enabled)
+            
+            if can_suspend:
+                # Check for ready READs
+                queues = [self.mapping_read_queues[chip.channel_id][chip.chip_id],
+                          self.gc_read_queues[chip.channel_id][chip.chip_id]]
+                for s_q in self.user_read_queues[chip.channel_id][chip.chip_id]:
+                    queues.append(s_q)
+                
+                if self._any_ready_transaction(queues, die_id):
+                    # Suspend current
+                    chip.suspend(die_id)
+                    self.suspended_transactions[(chip, die_id)] = active_txs
+                    # The suspend() call will fire on_idle, which triggers service_chip_requests again
             return
 
         # Die is IDLE. 
         # First priority: resume suspended transactions if no higher priority reads are waiting
         if (chip, die_id) in self.suspended_transactions:
-            # Check if there are still any pending READs that might have higher priority than resuming
             queues = [self.mapping_read_queues[chip.channel_id][chip.chip_id],
                       self.gc_read_queues[chip.channel_id][chip.chip_id]]
-            # Flatten user queues for this check
             for s_q in self.user_read_queues[chip.channel_id][chip.chip_id]:
                 queues.append(s_q)
             

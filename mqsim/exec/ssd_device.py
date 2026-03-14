@@ -74,6 +74,8 @@ class SSDDevice:
         )
         self.firmware.phy = self.phy
         self.firmware.tsu.phy = self.phy
+        self.firmware.tsu.program_suspension_enabled = parameters.program_suspension_enabled
+        self.firmware.tsu.erase_suspension_enabled = parameters.erase_suspension_enabled
         self.firmware.gc_and_wl_unit.phy = self.phy
 
         # 4. Data Cache Manager

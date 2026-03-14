@@ -52,6 +52,8 @@ class DeviceParameterSet:
         self.plane_allocation_scheme = "CWDP"
         self.data_cache_sharing_mode = "SHARED"
         self.ideal_mapping_table = False
+        self.erase_suspension_enabled = False
+        self.program_suspension_enabled = False
 
     def deserialize(self, node):
         self.memory_type = node.findtext("Memory_Type")
@@ -63,6 +65,8 @@ class DeviceParameterSet:
         self.data_cache_capacity = int(node.findtext("Data_Cache_Capacity", "268435456"))
         self.data_cache_sharing_mode = node.findtext("Data_Cache_Sharing_Mode", "SHARED")
         self.ideal_mapping_table = node.findtext("Ideal_Mapping_Table", "false").lower() == "true"
+        self.erase_suspension_enabled = node.findtext("Erase_Suspension_Enabled", "false").lower() == "true"
+        self.program_suspension_enabled = node.findtext("Program_Suspension_Enabled", "false").lower() == "true"
         self.data_cache_dram_row_size = int(node.findtext("Data_Cache_DRAM_Row_Size", "8192"))
         self.data_cache_dram_data_rate = int(node.findtext("Data_Cache_DRAM_Data_Rate", "100"))
         # Note: XML has typo "Data_Cache_DRAM_Data_Busrt_Size"
