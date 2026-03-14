@@ -9,7 +9,8 @@ from mqsim.utils.random_generator import RandomGenerator
 class FTL(SimObject):
     def __init__(self, id, channel_no, chip_no_per_channel, die_no_per_chip, 
                  plane_no_per_die, block_no_per_plane, page_no_per_block, 
-                 page_size_in_sectors, over_provisioning_ratio, seed):
+                 page_size_in_sectors, over_provisioning_ratio, seed,
+                 cmt_capacity=1024, stream_count=1):
         super().__init__(id)
         self.channel_no = channel_no
         self.chip_no_per_channel = chip_no_per_channel
@@ -34,10 +35,11 @@ class FTL(SimObject):
                                 block_no_per_plane * page_no_per_block)
         
         no_of_logical_pages = int(total_physical_pages * (1.0 - over_provisioning_ratio))
-        self.address_mapping_unit = PageLevelAddressMapping(no_of_logical_pages)
+        self.address_mapping_unit = PageLevelAddressMapping(no_of_logical_pages, cmt_capacity, stream_count)
 
         # 3. Initialize Transaction Scheduling Unit (TSU)
         self.tsu = TSUOutOfOrder(f"{id}.TSU", channel_no, chip_no_per_channel)
+        self.tsu.ftl = self
 
         # 4. Initialize GC and WL Unit
         self.gc_and_wl_unit = GCUnit(
@@ -53,14 +55,29 @@ class FTL(SimObject):
         self.host_interface = host_interface
         self.tsu.host_interface = host_interface
 
+    def allocate_page_for_translation_write(self, stream_id, lpa):
+        # Find a suitable plane (Static allocation)
+        channel_id = lpa % self.channel_no
+        chip_id = (lpa // self.channel_no) % self.chip_no_per_channel
+        die_id = (lpa // (self.channel_no * self.chip_no_per_channel)) % self.die_no_per_chip
+        plane_id = (lpa // (self.channel_no * self.chip_no_per_channel * self.die_no_per_chip)) % self.plane_no_per_die
+        
+        target_addr = {
+            "channel": channel_id,
+            "chip": chip_id,
+            "die": die_id,
+            "plane": plane_id
+        }
+        
+        return self.block_manager.allocate_page_for_translation_write(stream_id, target_addr)
+
     def segment_user_request(self, user_request):
         """
         Breaks a host-level request into page-sized NVM transactions.
+        Handles CMT misses and evictions.
         """
         lsa = user_request.lsa
         size = user_request.size_in_sectors
-        
-        transactions = []
         
         # Calculate the starting LPA and offset
         current_lsa = lsa
@@ -81,8 +98,49 @@ class FTL(SimObject):
                 user_request=user_request
             )
             
-            # Simple Static Plane Allocation CWDP (Channel-Way-Die-Plane)
-            # Ported simplified allocation from C++
+            # 1. CMT Lookup
+            if not self.address_mapping_unit.query_cmt(tr.stream_id, tr.lpa):
+                # MISS: Generate mapping read
+                # In MQSim, multiple transactions for the same LPA wait for one mapping read
+                domain = self.address_mapping_unit.domains[tr.stream_id]
+                if tr.lpa not in domain.waiting_unmapped_read_transactions:
+                    domain.waiting_unmapped_read_transactions[tr.lpa] = []
+                    
+                    # Generate Mapping Read Transaction
+                    mapping_tr = NVMTransaction(
+                        stream_id=tr.stream_id,
+                        transaction_type=TransactionType.READ,
+                        source=TransactionSource.MAPPING,
+                        lpa=tr.lpa
+                    )
+                    # For mapping pages, we use a different allocation or static 
+                    # Simplified: same static plane as data
+                    m_channel = tr.lpa % self.channel_no
+                    m_chip = (tr.lpa // self.channel_no) % self.chip_no_per_channel
+                    mapping_tr.address = {
+                        "channel": m_channel, "chip": m_chip, "die": 0, "plane": 0, "block": 0, "page": 0
+                    }
+                    
+                    # Handle Eviction if CMT is full
+                    if len(domain.cmt.slots) >= domain.cmt.capacity:
+                        evicted_lpa, evicted_slot = domain.cmt.evict_lru()
+                        if evicted_slot and evicted_slot.dirty:
+                            # Generate Mapping Writeback
+                            wb_tr = NVMTransaction(
+                                stream_id=tr.stream_id,
+                                transaction_type=TransactionType.WRITE,
+                                source=TransactionSource.MAPPING,
+                                lpa=evicted_lpa
+                            )
+                            wb_tr.address = self.allocate_page_for_translation_write(tr.stream_id, evicted_lpa)
+                            self.tsu.submit_transaction(wb_tr)
+
+                    self.tsu.submit_transaction(mapping_tr)
+                
+                domain.waiting_unmapped_read_transactions[tr.lpa].append(tr)
+                tr.suspend_required = True # Mark that it shouldn't be scheduled yet
+            
+            # 2. Address Allocation
             channel_id = lpa % self.channel_no
             chip_id = (lpa // self.channel_no) % self.chip_no_per_channel
             die_id = (lpa // (self.channel_no * self.chip_no_per_channel)) % self.die_no_per_chip
@@ -93,34 +151,53 @@ class FTL(SimObject):
                 "chip": chip_id,
                 "die": die_id,
                 "plane": plane_id,
-                "block": 0, # To be allocated by block manager if write
-                "page": 0
+                "block": 0, "page": 0
             }
             
             if tr.type == "WRITE":
-                # Allocate a new PPA
                 allocated_addr = self.block_manager.allocate_page_for_user_write(tr.stream_id, tr.address)
                 tr.address = allocated_addr
-                tr.ppa = 0 # Dummy PPA
+                tr.ppa = 0 # Dummy
                 self.address_mapping_unit.update_mapping_info(tr.stream_id, tr.lpa, tr.ppa)
             else:
-                # Read: Look up PPA
                 tr.ppa = self.address_mapping_unit.get_ppa(tr.stream_id, tr.lpa)
-                if tr.ppa == -1:
-                    # Not written yet, return dummy data (still takes time)
-                    pass
             
-            transactions.append(tr)
             user_request.transaction_list.append(tr)
-            
-            self.tsu.submit_transaction(tr)
+            if not tr.suspend_required:
+                self.tsu.submit_transaction(tr)
             
             current_lsa += sectors_in_this_page
             remaining_size -= sectors_in_this_page
             
         self.tsu.schedule()
                     
-        return transactions
+        return user_request.transaction_list
+
+    def handle_transaction_finished(self, transaction):
+        if transaction.source == TransactionSource.MAPPING:
+            domain = self.address_mapping_unit.domains[transaction.stream_id]
+            if transaction.type == TransactionType.READ:
+                # Mapping entry fetched from flash
+                ppa = self.address_mapping_unit.get_ppa(transaction.stream_id, transaction.lpa) # This might still return -1 if not in GMT
+                
+                # If it's already in CMT and dirty, don't clear the dirty bit
+                is_dirty = domain.cmt.is_dirty(transaction.lpa)
+                domain.cmt.insert(transaction.lpa, ppa, dirty=is_dirty)
+                
+                # Release waiting transactions
+                if transaction.lpa in domain.waiting_unmapped_read_transactions:
+                    waiting_txs = domain.waiting_unmapped_read_transactions.pop(transaction.lpa)
+                    for tr in waiting_txs:
+                        tr.suspend_required = False
+                        # If it's a read, we need to update its PPA now that CMT is populated
+                        if tr.type == TransactionType.READ:
+                            tr.ppa = domain.cmt.retrieve_ppa(tr.lpa)
+                        self.tsu.submit_transaction(tr)
+                    self.tsu.schedule()
+            else:
+                # Mapping writeback finished
+                # In MQSim, we might need to update GTD or just mark as clean
+                pass
 
     def execute_sim_event(self, event):
         pass
