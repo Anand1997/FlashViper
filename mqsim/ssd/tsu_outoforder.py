@@ -3,21 +3,28 @@ from mqsim.utils.signal import Signal
 from mqsim.nvm_chip.flash_chip import ChipStatus, DieStatus
 
 class TSUOutOfOrder(TSUBase):
-    def __init__(self, id, channel_count, chip_no_per_channel):
+    def __init__(self, id, channel_count, chip_no_per_channel, stream_count=1):
         super().__init__()
         self.id = id
         self.channel_count = channel_count
         self.chip_no_per_channel = chip_no_per_channel
+        self.stream_count = stream_count
         
-        # Initialize 2D arrays of queues: [Channel][Chip]
-        self.user_read_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
-        self.user_write_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        # User queues: [Channel][Chip][Stream]
+        self.user_read_queues = [[[[] for _ in range(stream_count)] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        self.user_write_queues = [[[[] for _ in range(stream_count)] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        
+        # System queues: [Channel][Chip] (Shared across streams)
         self.gc_read_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         self.gc_write_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         self.gc_erase_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         self.mapping_read_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         self.mapping_write_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         
+        # Track last serviced stream for Round Robin: [Channel][Chip]
+        self.last_serviced_stream_read = [[0 for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        self.last_serviced_stream_write = [[0 for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+
         # (Chip, Die) -> List of Active Transactions
         self.active_transactions = {}
         # (Chip, Die) -> List of Suspended Transactions
@@ -41,14 +48,14 @@ class TSUOutOfOrder(TSUBase):
                 elif trans.source == "GC_WL":
                     self.gc_read_queues[channel_id][chip_id].append(trans)
                 else:
-                    self.user_read_queues[channel_id][chip_id].append(trans)
+                    self.user_read_queues[channel_id][chip_id][trans.stream_id].append(trans)
             elif trans.type == "WRITE":
                 if trans.source == "MAPPING":
                     self.mapping_write_queues[channel_id][chip_id].append(trans)
                 elif trans.source == "GC_WL":
                     self.gc_write_queues[channel_id][chip_id].append(trans)
                 else:
-                    self.user_write_queues[channel_id][chip_id].append(trans)
+                    self.user_write_queues[channel_id][chip_id][trans.stream_id].append(trans)
             elif trans.type == "ERASE":
                 self.gc_erase_queues[channel_id][chip_id].append(trans)
                 
@@ -59,6 +66,133 @@ class TSUOutOfOrder(TSUBase):
             for channel_id, chip_id, die_id in affected_dies:
                 chip = self.phy.get_chip(channel_id, chip_id)
                 self.service_chip_requests(chip, die_id)
+
+    def _find_ready_transactions(self, queues, die_id, max_planes, is_user_queue=False, stream_id_start=0):
+        """
+        Enhanced to support Round Robin among streams if is_user_queue is True.
+        """
+        grouped_txs = []
+        plane_vector = 0
+        target_page_id = None
+        
+        # If user queue, we need to flatten/interleave based on Round Robin
+        queues_to_process = []
+        if is_user_queue:
+            # Reorder queues based on starting stream_id (Round Robin)
+            for i in range(self.stream_count):
+                s_id = (stream_id_start + i) % self.stream_count
+                queues_to_process.append((queues[s_id], s_id))
+        else:
+            for q in queues:
+                queues_to_process.append((q, -1))
+
+        for queue, s_id in queues_to_process:
+            i = 0
+            while i < len(queue) and len(grouped_txs) < max_planes:
+                tx = queue[i]
+                if tx.address.get("die", 0) == die_id and self._transaction_is_ready(tx):
+                    plane_id = tx.address.get("plane", 0)
+                    page_id = tx.address.get("page", 0)
+                    
+                    if (plane_vector & (1 << plane_id)) == 0:
+                        if target_page_id is None or target_page_id == page_id:
+                            target_page_id = page_id
+                            plane_vector |= (1 << plane_id)
+                            grouped_txs.append(queue.pop(i))
+                            # If we found a transaction for a stream, update the last serviced
+                            if s_id != -1:
+                                channel_id = tx.address["channel"]
+                                chip_id = tx.address["chip"]
+                                if tx.type == "READ":
+                                    self.last_serviced_stream_read[channel_id][chip_id] = (s_id + 1) % self.stream_count
+                                else:
+                                    self.last_serviced_stream_write[channel_id][chip_id] = (s_id + 1) % self.stream_count
+                            continue
+                i += 1
+            if len(grouped_txs) == max_planes:
+                break
+                
+        return grouped_txs
+
+    def service_read_transaction(self, chip, die_id):
+        channel_id = chip.channel_id
+        chip_id = chip.chip_id
+        
+        is_urgent = False
+        if self.ftl and self.ftl.gc_and_wl_unit:
+            is_urgent = self.ftl.gc_and_wl_unit.is_urgent({
+                "channel": channel_id, "chip": chip_id, "die": die_id, "plane": 0
+            })
+
+        # 1. High Priority: Mapping
+        txs = self._find_ready_transactions([self.mapping_read_queues[channel_id][chip_id]], die_id, chip.dies[die_id].planes_per_die)
+        if txs:
+            self._issue_command_to_chip(chip, txs, die_id)
+            return True
+
+        # 2. GC (if urgent)
+        if is_urgent:
+            txs = self._find_ready_transactions([self.gc_read_queues[channel_id][chip_id]], die_id, chip.dies[die_id].planes_per_die)
+            if txs:
+                self._issue_command_to_chip(chip, txs, die_id)
+                return True
+
+        # 3. User (Round Robin)
+        start_stream = self.last_serviced_stream_read[channel_id][chip_id]
+        txs = self._find_ready_transactions(self.user_read_queues[channel_id][chip_id], die_id, chip.dies[die_id].planes_per_die, 
+                                           is_user_queue=True, stream_id_start=start_stream)
+        if txs:
+            self._issue_command_to_chip(chip, txs, die_id)
+            return True
+
+        # 4. GC (if not urgent)
+        if not is_urgent:
+            txs = self._find_ready_transactions([self.gc_read_queues[channel_id][chip_id]], die_id, chip.dies[die_id].planes_per_die)
+            if txs:
+                self._issue_command_to_chip(chip, txs, die_id)
+                return True
+
+        return False
+
+    def service_write_transaction(self, chip, die_id):
+        channel_id = chip.channel_id
+        chip_id = chip.chip_id
+        
+        is_urgent = False
+        if self.ftl and self.ftl.gc_and_wl_unit:
+            is_urgent = self.ftl.gc_and_wl_unit.is_urgent({
+                "channel": channel_id, "chip": chip_id, "die": die_id, "plane": 0
+            })
+
+        # 1. Mapping
+        txs = self._find_ready_transactions([self.mapping_write_queues[channel_id][chip_id]], die_id, chip.dies[die_id].planes_per_die)
+        if txs:
+            self._issue_command_to_chip(chip, txs, die_id)
+            return True
+
+        # 2. GC (if urgent)
+        if is_urgent:
+            txs = self._find_ready_transactions([self.gc_write_queues[channel_id][chip_id]], die_id, chip.dies[die_id].planes_per_die)
+            if txs:
+                self._issue_command_to_chip(chip, txs, die_id)
+                return True
+
+        # 3. User (Round Robin)
+        start_stream = self.last_serviced_stream_write[channel_id][chip_id]
+        txs = self._find_ready_transactions(self.user_write_queues[channel_id][chip_id], die_id, chip.dies[die_id].planes_per_die,
+                                           is_user_queue=True, stream_id_start=start_stream)
+        if txs:
+            self._issue_command_to_chip(chip, txs, die_id)
+            return True
+
+        # 4. GC (if not urgent)
+        if not is_urgent:
+            txs = self._find_ready_transactions([self.gc_write_queues[channel_id][chip_id]], die_id, chip.dies[die_id].planes_per_die)
+            if txs:
+                self._issue_command_to_chip(chip, txs, die_id)
+                return True
+
+        return False
 
     def handle_chip_idle_signal(self, chip, die_id=0):
         # 1. Finish the previous transactions if any
@@ -88,35 +222,17 @@ class TSUOutOfOrder(TSUBase):
     def service_chip_requests(self, chip, die_id=0):
         die = chip.dies[die_id]
         if die.status == DieStatus.BUSY:
-            # Check if we can suspend for an urgent read
-            # In MQSim, only WRITE or ERASE can be suspended by READ
-            active_txs = self.active_transactions.get((chip, die_id))
-            if active_txs and active_txs[0].type in ["WRITE", "ERASE"]:
-                # Check for ready READs
-                queues = [self.mapping_read_queues[chip.channel_id][chip.chip_id],
-                          self.gc_read_queues[chip.channel_id][chip.chip_id],
-                          self.user_read_queues[chip.channel_id][chip.chip_id]]
-                
-                # We only suspend if the new transaction explicitly allows/requests it
-                # or if it is higher priority. For now, simple logic: any read can suspend.
-                # In a real port, we'd check if suspension is supported/enabled.
-                txs = self._find_ready_transactions(queues, die_id, die.planes_per_die)
-                if txs:
-                    # Suspend current
-                    chip.suspend(die_id)
-                    self.suspended_transactions[(chip, die_id)] = active_txs
-                    # Issue the read
-                    self._issue_command_to_chip(chip, txs, die_id)
             return
 
         # Die is IDLE. 
         # First priority: resume suspended transactions if no higher priority reads are waiting
         if (chip, die_id) in self.suspended_transactions:
             # Check if there are still any pending READs that might have higher priority than resuming
-            # (In MQSim, usually you'd resume if no more suspending reads are left)
             queues = [self.mapping_read_queues[chip.channel_id][chip.chip_id],
-                      self.gc_read_queues[chip.channel_id][chip.chip_id],
-                      self.user_read_queues[chip.channel_id][chip.chip_id]]
+                      self.gc_read_queues[chip.channel_id][chip.chip_id]]
+            # Flatten user queues for this check
+            for s_q in self.user_read_queues[chip.channel_id][chip.chip_id]:
+                queues.append(s_q)
             
             if not self._any_ready_transaction(queues, die_id):
                 resumed_txs = self.suspended_transactions.pop((chip, die_id))
@@ -134,92 +250,6 @@ class TSUOutOfOrder(TSUBase):
             for tx in queue:
                 if tx.address.get("die", 0) == die_id and self._transaction_is_ready(tx):
                     return True
-        return False
-
-    def _find_ready_transactions(self, queues, die_id, max_planes):
-        """
-        Find up to 'max_planes' transactions that can be grouped into a multi-plane command.
-        They must target the same die, different planes, and the same page offset.
-        """
-        grouped_txs = []
-        plane_vector = 0
-        target_page_id = None
-        
-        for queue in queues:
-            # We iterate backwards or carefully because we might pop multiple items
-            i = 0
-            while i < len(queue) and len(grouped_txs) < max_planes:
-                tx = queue[i]
-                if tx.address.get("die", 0) == die_id and self._transaction_is_ready(tx):
-                    plane_id = tx.address.get("plane", 0)
-                    page_id = tx.address.get("page", 0)
-                    
-                    if (plane_vector & (1 << plane_id)) == 0:
-                        # Check if it's the first tx or if it matches the target page ID
-                        if target_page_id is None or target_page_id == page_id:
-                            target_page_id = page_id
-                            plane_vector |= (1 << plane_id)
-                            grouped_txs.append(queue.pop(i))
-                            continue # Don't increment i, as we popped the element
-                i += 1
-                
-            if len(grouped_txs) == max_planes:
-                break
-                
-        return grouped_txs
-
-    def service_read_transaction(self, chip, die_id):
-        channel_id = chip.channel_id
-        chip_id = chip.chip_id
-        
-        # Priority: Mapping > GC (if urgent) > User > GC (if not urgent)
-        # MQSim often prioritizes GC reads even if not urgent to free up blocks
-        
-        is_urgent = False
-        if self.ftl and self.ftl.gc_and_wl_unit:
-            # Check any plane in this die
-            is_urgent = self.ftl.gc_and_wl_unit.is_urgent({
-                "channel": channel_id, "chip": chip_id, "die": die_id, "plane": 0
-            })
-
-        if is_urgent:
-            queues = [self.mapping_read_queues[channel_id][chip_id],
-                      self.gc_read_queues[channel_id][chip_id],
-                      self.user_read_queues[channel_id][chip_id]]
-        else:
-            queues = [self.mapping_read_queues[channel_id][chip_id],
-                      self.user_read_queues[channel_id][chip_id],
-                      self.gc_read_queues[channel_id][chip_id]]
-                  
-        txs = self._find_ready_transactions(queues, die_id, chip.dies[die_id].planes_per_die)
-        if txs:
-            self._issue_command_to_chip(chip, txs, die_id)
-            return True
-        return False
-
-    def service_write_transaction(self, chip, die_id):
-        channel_id = chip.channel_id
-        chip_id = chip.chip_id
-        
-        is_urgent = False
-        if self.ftl and self.ftl.gc_and_wl_unit:
-            is_urgent = self.ftl.gc_and_wl_unit.is_urgent({
-                "channel": channel_id, "chip": chip_id, "die": die_id, "plane": 0
-            })
-
-        if is_urgent:
-            queues = [self.mapping_write_queues[channel_id][chip_id],
-                      self.gc_write_queues[channel_id][chip_id],
-                      self.user_write_queues[channel_id][chip_id]]
-        else:
-            queues = [self.mapping_write_queues[channel_id][chip_id],
-                      self.user_write_queues[channel_id][chip_id],
-                      self.gc_write_queues[channel_id][chip_id]]
-                  
-        txs = self._find_ready_transactions(queues, die_id, chip.dies[die_id].planes_per_die)
-        if txs:
-            self._issue_command_to_chip(chip, txs, die_id)
-            return True
         return False
 
     def service_erase_transaction(self, chip, die_id):

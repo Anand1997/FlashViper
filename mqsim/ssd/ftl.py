@@ -38,7 +38,7 @@ class FTL(SimObject):
         self.address_mapping_unit = PageLevelAddressMapping(no_of_logical_pages, cmt_capacity, stream_count, scheme=scheme)
 
         # 3. Initialize Transaction Scheduling Unit (TSU)
-        self.tsu = TSUOutOfOrder(f"{id}.TSU", channel_no, chip_no_per_channel)
+        self.tsu = TSUOutOfOrder(f"{id}.TSU", channel_no, chip_no_per_channel, stream_count=stream_count)
         self.tsu.ftl = self
 
         # 4. Initialize GC and WL Unit
