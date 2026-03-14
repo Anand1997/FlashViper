@@ -57,8 +57,8 @@ def main():
         host.attach_ssd_device(ssd)
         ssd.attach_to_host(host.pcie_switch)
         
-        # Preconditioning - Temporarily disabled for speed comparison
-        # ssd.perform_preconditioning(scenario.flow_definitions)
+        # Preconditioning
+        ssd.perform_preconditioning(scenario.flow_definitions)
         
         # 4. Create IO Flows based on scenario definitions
         for j, flow_def in enumerate(scenario.flow_definitions):
@@ -76,9 +76,6 @@ def main():
                 # Apply working set percentage
                 end_lsa = int(ssd.host_interface.max_lsa * (flow_def.working_set_percentage / 100.0))
                 
-                # Cap stop time at 10ms (10,000,000 ns) for comparison
-                capped_stop_time = min(flow_def.stop_time, 10000000)
-
                 flow = SyntheticIOFlow(
                     id=f"Host.IO_Flow.Synth.No_{j}",
                     stream_id=stream_id,
@@ -87,7 +84,7 @@ def main():
                     end_lsa=end_lsa,
                     seed=flow_def.seed,
                     queue_depth=flow_def.average_no_of_reqs_in_queue,
-                    stop_time=capped_stop_time,
+                    stop_time=flow_def.stop_time,
                     total_req_count=flow_def.total_requests_to_generate,
                     host_interface=ssd.host_interface
                 )
