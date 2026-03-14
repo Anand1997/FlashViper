@@ -6,7 +6,7 @@ from mqsim.exec.ssd_device import SSDDevice
 
 # Get the project root directory relative to this test file
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(TEST_DIR, "..", ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(TEST_DIR, ".."))
 
 def test_main_orchestration():
     # 1. Parse configuration
