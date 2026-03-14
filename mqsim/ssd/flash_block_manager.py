@@ -12,9 +12,11 @@ class PlaneBookKeeping:
         self.blocks = [BlockPoolSlot(i, page_no_per_block) for i in range(block_no_per_plane)]
         self.free_block_pool = list(range(block_no_per_plane))
         self.data_wf = None  # Data Write Frontier (the active block)
+        self.translation_wf = None # Translation Write Frontier
 
     def get_free_block(self):
         if not self.free_block_pool:
+            # Trigger GC if needed? For now just raise error
             raise RuntimeError("No free blocks available!")
         block_id = self.free_block_pool.pop(0)
         return self.blocks[block_id]
@@ -38,6 +40,25 @@ class FlashBlockManager:
 
     def _get_plane_bookkeeping(self, address):
         return self.plane_manager[address["channel"]][address["chip"]][address["die"]][address["plane"]]
+
+    def allocate_page_for_translation_write(self, stream_id, address):
+        plane_record = self._get_plane_bookkeeping(address)
+        
+        if plane_record.translation_wf is None or plane_record.translation_wf.current_page_write_index == self.page_no_per_block:
+            plane_record.translation_wf = plane_record.get_free_block()
+        
+        wf = plane_record.translation_wf
+        allocated_page_id = wf.current_page_write_index
+        wf.current_page_write_index += 1
+        
+        return {
+            "channel": address["channel"],
+            "chip": address["chip"],
+            "die": address["die"],
+            "plane": address["plane"],
+            "block": wf.block_id,
+            "page": allocated_page_id
+        }
 
     def allocate_page_for_user_write(self, stream_id, address):
         plane_record = self._get_plane_bookkeeping(address)
