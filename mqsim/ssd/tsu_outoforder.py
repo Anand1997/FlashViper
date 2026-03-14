@@ -225,7 +225,7 @@ class TSUOutOfOrder(TSUBase):
     def service_chip_requests(self, chip, die_id=0):
         die = chip.dies[die_id]
         if die.status == DieStatus.BUSY:
-            # Check if we can suspend for an urgent read
+            # Check for suspension
             active_txs = self.active_transactions.get((chip, die_id))
             if not active_txs:
                 return
@@ -244,7 +244,10 @@ class TSUOutOfOrder(TSUBase):
                     # Suspend current
                     chip.suspend(die_id)
                     self.suspended_transactions[(chip, die_id)] = active_txs
-                    # The suspend() call will fire on_idle, which triggers service_chip_requests again
+            return
+
+        # Check Channel Bus
+        if self.phy and self.phy.is_channel_busy(chip.channel_id):
             return
 
         # Die is IDLE. 
@@ -295,6 +298,17 @@ class TSUOutOfOrder(TSUBase):
         else:
             cmd_type = "ERASE_BLOCK_MULTIPLANE" if len(transactions) > 1 else "ERASE_BLOCK"
         
-        chip.start_command_execution(cmd_type, die_id, base_tx.address.get("page", 0))
+        # Use PHY to simulate bus transfer (command/address phase)
+        if self.phy:
+            tCAD = 20 # 20ns
+            self.phy.start_transfer(chip.channel_id, tCAD, {
+                "type": "START_CHIP_EXEC",
+                "chip": chip,
+                "cmd_type": cmd_type,
+                "die_id": die_id,
+                "page_id": base_tx.address.get("page", 0)
+            })
+        else:
+            chip.start_command_execution(cmd_type, die_id, base_tx.address.get("page", 0))
 
     def execute_sim_event(self, event): pass
