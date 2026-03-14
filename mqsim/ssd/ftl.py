@@ -118,6 +118,15 @@ class FTL(SimObject):
             # Allocate physical page
             allocated_addr = self.block_manager.allocate_page_for_preconditioning(stream_id, address)
             
+            # Check for overwrite and invalidate old page
+            old_ppa = self.address_mapping_unit.get_ppa(stream_id, lpa)
+            if old_ppa != -1:
+                # In this simplified model, PPA is not a direct physical address yet
+                # We'd need a way to translate PPA to address or store address in GMT.
+                # For now, let's assume PPA 0 is dummy and skip invalidation
+                # OR improve GMT to store full address.
+                pass
+
             # Update mapping
             self.address_mapping_unit.domains[stream_id].update_mapping_info_for_preconditioning(lpa, 0) # Dummy PPA
 
@@ -266,4 +275,6 @@ class FTL(SimObject):
                 pass
 
     def execute_sim_event(self, event):
-        pass
+        if event.type == "SEGMENT":
+            user_request = event.parameters
+            self.segment_user_request(user_request)
