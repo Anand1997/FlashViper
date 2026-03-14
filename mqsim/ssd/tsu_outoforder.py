@@ -16,6 +16,7 @@ class TSUOutOfOrder(TSUBase):
         self.gc_write_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         self.gc_erase_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         self.mapping_read_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        self.mapping_write_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
         
         # (Chip, Die) -> List of Active Transactions
         self.active_transactions = {}
@@ -24,6 +25,7 @@ class TSUOutOfOrder(TSUBase):
 
         self.on_transaction_finished = Signal()
         self.host_interface = None # To be linked
+        self.ftl = None # To be linked
 
     def schedule(self):
         affected_dies = set()
@@ -41,7 +43,9 @@ class TSUOutOfOrder(TSUBase):
                 else:
                     self.user_read_queues[channel_id][chip_id].append(trans)
             elif trans.type == "WRITE":
-                if trans.source == "GC_WL":
+                if trans.source == "MAPPING":
+                    self.mapping_write_queues[channel_id][chip_id].append(trans)
+                elif trans.source == "GC_WL":
                     self.gc_write_queues[channel_id][chip_id].append(trans)
                 else:
                     self.user_write_queues[channel_id][chip_id].append(trans)
@@ -62,6 +66,11 @@ class TSUOutOfOrder(TSUBase):
             finished_txs = self.active_transactions.pop((chip, die_id))
             
             for finished_tr in finished_txs:
+                if finished_tr.source == "MAPPING":
+                    if self.ftl:
+                        self.ftl.handle_transaction_finished(finished_tr)
+                    continue
+
                 # Remove from user request's transaction list
                 if finished_tr.user_request:
                     user_req = finished_tr.user_request
@@ -177,7 +186,8 @@ class TSUOutOfOrder(TSUBase):
         channel_id = chip.channel_id
         chip_id = chip.chip_id
         
-        queues = [self.gc_write_queues[channel_id][chip_id],
+        queues = [self.mapping_write_queues[channel_id][chip_id],
+                  self.gc_write_queues[channel_id][chip_id],
                   self.user_write_queues[channel_id][chip_id]]
                   
         txs = self._find_ready_transactions(queues, die_id, chip.dies[die_id].planes_per_die)
