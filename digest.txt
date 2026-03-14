@@ -1,0 +1,1834 @@
+Directory structure:
+└── mqsim-flash-viper/
+    ├── README.md
+    ├── LICENSE
+    ├── main.py
+    ├── requirements.txt
+    └── mqsim/
+        ├── __init__.py
+        ├── exec/
+        │   ├── execution_parameter_set.py
+        │   ├── host_system.py
+        │   └── ssd_device.py
+        ├── host/
+        │   └── io_flow.py
+        ├── nvm_chip/
+        │   └── flash_chip.py
+        ├── sim/
+        │   ├── engine.py
+        │   └── sim_object.py
+        ├── ssd/
+        │   ├── data_cache_manager.py
+        │   ├── flash_block_manager.py
+        │   ├── ftl.py
+        │   ├── gc_and_wl_unit.py
+        │   ├── host_interface_nvme.py
+        │   ├── mapping_unit.py
+        │   ├── nvm_phy.py
+        │   ├── nvm_transaction.py
+        │   ├── tsu_base.py
+        │   ├── tsu_outoforder.py
+        │   └── user_request.py
+        └── utils/
+            ├── random_generator.py
+            └── signal.py
+
+================================================
+FILE: README.md
+================================================
+# FlashViper :  Python port of MQSim
+
+Input file : C:\Users\anand\ws\mqsim-wl
+
+
+================================================
+FILE: LICENSE
+================================================
+Copyright (c) 2018, SAFARI Research Group at ETH Zurich University
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+
+================================================
+FILE: main.py
+================================================
+import sys
+import os
+import argparse
+import time
+from mqsim.sim.engine import Engine
+from mqsim.exec.execution_parameter_set import ExecutionParameterSet
+from mqsim.exec.host_system import HostSystem
+from mqsim.exec.ssd_device import SSDDevice
+from mqsim.host.io_flow import SyntheticIOFlow
+
+def main():
+    parser = argparse.ArgumentParser(description='MQSim Python Simulator')
+    parser.add_argument('-i', '--input', required=True, help='Path to SSD configuration file')
+    parser.add_argument('-w', '--workload', required=True, help='Path to workload definition file')
+    
+    args = parser.parse_args()
+    
+    ssd_config_path = args.input
+    workload_path = args.workload
+    
+    if not os.path.exists(ssd_config_path):
+        print(f"Error: SSD configuration file {ssd_config_path} not found.")
+        return 1
+        
+    if not os.path.exists(workload_path):
+        print(f"Error: Workload definition file {workload_path} not found.")
+        return 1
+
+    # 1. Parse configuration
+    exec_params = ExecutionParameterSet()
+    exec_params.deserialize(ssd_config_path)
+    scenarios = exec_params.deserialize_workload(workload_path)
+    
+    engine = Engine()
+    
+    for i, scenario in enumerate(scenarios):
+        start_time_wall = time.time()
+        print(f"******************************")
+        print(f"Executing scenario {i+1} out of {len(scenarios)} .......")
+        
+        # Reset the engine for each scenario
+        engine.reset()
+        
+        # 2. Instantiate SSD Device
+        ssd = SSDDevice(
+            parameters=exec_params.ssd_device_config,
+            io_flows=scenario.flow_definitions
+        )
+        
+        # 3. Instantiate Host System
+        host = HostSystem(
+            parameters=exec_params.host_config,
+            preconditioning_required=False,
+            ssd_host_interface=ssd.host_interface
+        )
+        host.attach_ssd_device(ssd)
+        ssd.attach_to_host(host.pcie_switch)
+        
+        # 4. Create IO Flows based on scenario definitions
+        for j, flow_def in enumerate(scenario.flow_definitions):
+            stream_id = ssd.host_interface.create_new_stream(
+                priority_class=flow_def.priority_class,
+                start_lsa=0, 
+                end_lsa=ssd.host_interface.max_lsa,
+                submission_queue_base_address=0x1000 * j,
+                completion_queue_base_address=0x2000 * j
+            )
+            
+            if hasattr(flow_def, 'read_percentage'):
+                read_ratio = flow_def.read_percentage / 100.0
+                
+                # Apply working set percentage
+                end_lsa = int(ssd.host_interface.max_lsa * (flow_def.working_set_percentage / 100.0))
+                
+                flow = SyntheticIOFlow(
+                    id=f"Host.IO_Flow.Synth.No_{j}",
+                    stream_id=stream_id,
+                    read_ratio=read_ratio,
+                    start_lsa=0,
+                    end_lsa=end_lsa,
+                    seed=flow_def.seed,
+                    queue_depth=flow_def.average_no_of_reqs_in_queue,
+                    stop_time=flow_def.stop_time,
+                    total_req_count=flow_def.total_requests_to_generate,
+                    host_interface=ssd.host_interface
+                )
+                host.add_io_flow(flow)
+                engine.add_object(flow)
+                # Link HI back to flow for completion notification
+                ssd.host_interface.set_io_flow(stream_id, flow)
+        
+        # Add SSD components to engine
+        engine.add_object(ssd.host_interface)
+        # engine.add_object(ssd.cache_manager)
+        # engine.add_object(ssd.firmware)
+        # engine.add_object(ssd.phy)
+        for channel in ssd.phy.chips:
+            for chip in channel:
+                engine.add_object(chip)
+        
+        # 5. Start Simulation
+        print("Simulation started ...")
+        engine.start_simulation()
+        
+        end_time_wall = time.time()
+        duration = end_time_wall - start_time_wall
+        print(f"Scenario {i+1} finished. Wall-clock time: {duration:.2f} seconds")
+        
+        # 6. Basic Results Comparison
+        for flow in host.get_io_flows():
+            avg_lat = 0
+            if flow.serviced_request_count > 0:
+                avg_lat = flow.total_device_response_time / flow.serviced_request_count
+            print(f"Flow {flow.id} - total requests generated: {flow.generated_request_count} total requests serviced: {flow.serviced_request_count}")
+            print(f"                   - device response time: {avg_lat/1000:.0f} (us)")
+
+    print("All scenarios complete.")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+
+
+================================================
+FILE: requirements.txt
+================================================
+pytest
+pytest-mock
+
+
+
+================================================
+FILE: mqsim/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: mqsim/exec/execution_parameter_set.py
+================================================
+import xml.etree.ElementTree as ET
+
+class FlashParameterSet:
+    def __init__(self):
+        self.flash_technology = "SLC"
+        self.page_read_latency_lsb = 0
+        self.page_program_latency_lsb = 0
+        self.die_no_per_chip = 2
+        self.plane_no_per_die = 2
+        self.block_no_per_plane = 2048
+        self.page_no_per_block = 256
+        self.page_capacity = 8192
+        self.block_erase_latency = 3800000
+
+    def deserialize(self, node):
+        self.flash_technology = node.findtext("Flash_Technology")
+        self.page_read_latency_lsb = int(node.findtext("Page_Read_Latency_LSB", "0"))
+        self.page_program_latency_lsb = int(node.findtext("Page_Program_Latency_LSB", "0"))
+        self.die_no_per_chip = int(node.findtext("Die_No_Per_Chip", "2"))
+        self.plane_no_per_die = int(node.findtext("Plane_No_Per_Die", "2"))
+        self.block_no_per_plane = int(node.findtext("Block_No_Per_Plane", "2048"))
+        self.page_no_per_block = int(node.findtext("Page_No_Per_Block", "256"))
+        self.page_capacity = int(node.findtext("Page_Capacity", "8192"))
+        self.block_erase_latency = int(node.findtext("Block_Erase_Latency", "3800000"))
+
+class DeviceParameterSet:
+    def __init__(self):
+        self.memory_type = "FLASH"
+        self.flash_channel_count = 0
+        self.chip_no_per_channel = 4
+        self.flash_params = FlashParameterSet()
+        self.seed = 321
+        self.overprovisioning_ratio = 0.07
+        self.data_cache_capacity = 268435456
+        self.data_cache_dram_row_size = 8192
+        self.data_cache_dram_data_rate = 100
+        self.data_cache_dram_data_burst_size = 1
+        self.data_cache_dram_tRCD = 13
+        self.data_cache_dram_tCL = 13
+        self.data_cache_dram_tRP = 13
+        self.io_queue_depth = 65535
+        self.queue_fetch_size = 512
+
+    def deserialize(self, node):
+        self.memory_type = node.findtext("Memory_Type")
+        self.flash_channel_count = int(node.findtext("Flash_Channel_Count", "0"))
+        self.chip_no_per_channel = int(node.findtext("Chip_No_Per_Channel", "4"))
+        self.seed = int(node.findtext("Seed", "321"))
+        self.overprovisioning_ratio = float(node.findtext("Overprovisioning_Ratio", "0.07"))
+        
+        self.data_cache_capacity = int(node.findtext("Data_Cache_Capacity", "268435456"))
+        self.data_cache_dram_row_size = int(node.findtext("Data_Cache_DRAM_Row_Size", "8192"))
+        self.data_cache_dram_data_rate = int(node.findtext("Data_Cache_DRAM_Data_Rate", "100"))
+        # Note: XML has typo "Data_Cache_DRAM_Data_Busrt_Size"
+        self.data_cache_dram_data_burst_size = int(node.findtext("Data_Cache_DRAM_Data_Busrt_Size", "1"))
+        self.data_cache_dram_tRCD = int(node.findtext("Data_Cache_DRAM_tRCD", "13"))
+        self.data_cache_dram_tCL = int(node.findtext("Data_Cache_DRAM_tCL", "13"))
+        self.data_cache_dram_tRP = int(node.findtext("Data_Cache_DRAM_tRP", "13"))
+        
+        self.io_queue_depth = int(node.findtext("IO_Queue_Depth", "65535"))
+        self.queue_fetch_size = int(node.findtext("Queue_Fetch_Size", "512"))
+        
+        flash_node = node.find("Flash_Parameter_Set")
+        if flash_node is not None:
+            self.flash_params.deserialize(flash_node)
+
+class HostParameterSet:
+    def __init__(self):
+        self.pcie_lane_count = 0
+        self.pcie_lane_bandwidth = 1.0
+        self.io_flow_definitions = []
+
+    def deserialize(self, node):
+        self.pcie_lane_count = int(node.findtext("PCIe_Lane_Count", "4"))
+        self.pcie_lane_bandwidth = float(node.findtext("PCIe_Lane_Bandwidth", "1.0"))
+
+class IOFlowParameterSet:
+    def __init__(self):
+        self.priority_class = "HIGH"
+        self.device_level_data_caching_mode = "WRITE_CACHE"
+        self.channel_ids = []
+        self.chip_ids = []
+        self.die_ids = []
+        self.plane_ids = []
+        self.initial_occupancy_percentage = 0
+
+    def deserialize_base(self, node):
+        self.priority_class = node.findtext("Priority_Class")
+        self.device_level_data_caching_mode = node.findtext("Device_Level_Data_Caching_Mode")
+        self.channel_ids = [int(x) for x in node.findtext("Channel_IDs").split(',')]
+        self.chip_ids = [int(x) for x in node.findtext("Chip_IDs").split(',')]
+        self.die_ids = [int(x) for x in node.findtext("Die_IDs").split(',')]
+        self.plane_ids = [int(x) for x in node.findtext("Plane_IDs").split(',')]
+        self.initial_occupancy_percentage = int(node.findtext("Initial_Occupancy_Percentage"))
+
+class IOFlowParameterSetSynthetic(IOFlowParameterSet):
+    def __init__(self):
+        super().__init__()
+        self.working_set_percentage = 85
+        self.synthetic_generator_type = "QUEUE_DEPTH"
+        self.read_percentage = 100
+        self.address_distribution = "RANDOM_UNIFORM"
+        self.percentage_of_hot_region = 0
+        self.generated_aligned_addresses = True
+        self.address_alignment_unit = 16
+        self.request_size_distribution = "FIXED"
+        self.average_request_size = 8
+        self.variance_request_size = 0
+        self.seed = 12344
+        self.average_no_of_reqs_in_queue = 2
+        self.stop_time = 1000000000
+        self.total_requests_to_generate = 0
+
+    def deserialize(self, node):
+        self.deserialize_base(node)
+        self.working_set_percentage = int(node.findtext("Working_Set_Percentage"))
+        self.synthetic_generator_type = node.findtext("Synthetic_Generator_Type")
+        self.read_percentage = int(node.findtext("Read_Percentage"))
+        self.address_distribution = node.findtext("Address_Distribution")
+        self.percentage_of_hot_region = int(node.findtext("Percentage_of_Hot_Region"))
+        self.generated_aligned_addresses = node.findtext("Generated_Aligned_Addresses").lower() == "true"
+        self.address_alignment_unit = int(node.findtext("Address_Alignment_Unit"))
+        self.request_size_distribution = node.findtext("Request_Size_Distribution")
+        self.average_request_size = int(node.findtext("Average_Request_Size"))
+        self.variance_request_size = int(node.findtext("Variance_Request_Size"))
+        self.seed = int(node.findtext("Seed"))
+        self.average_no_of_reqs_in_queue = int(node.findtext("Average_No_of_Reqs_in_Queue"))
+        self.stop_time = int(node.findtext("Stop_Time"))
+        self.total_requests_to_generate = int(node.findtext("Total_Requests_To_Generate"))
+
+class IOFlowParameterSetTraceBased(IOFlowParameterSet):
+    def __init__(self):
+        super().__init__()
+        self.file_path = ""
+        self.percentage_to_be_executed = 100
+        self.relay_count = 1
+        self.time_unit = "NANOSECOND"
+
+    def deserialize(self, node):
+        self.deserialize_base(node)
+        self.file_path = node.findtext("File_Path")
+        self.percentage_to_be_executed = int(node.findtext("Percentage_To_Be_Executed"))
+        self.relay_count = int(node.findtext("Relay_Count"))
+        self.time_unit = node.findtext("Time_Unit")
+
+class IOScenario:
+    def __init__(self):
+        self.flow_definitions = []
+
+class ExecutionParameterSet:
+    def __init__(self):
+        self.host_config = HostParameterSet()
+        self.ssd_device_config = DeviceParameterSet()
+
+    def deserialize(self, file_path):
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        
+        host_node = root.find("Host_Parameter_Set")
+        if host_node is not None:
+            self.host_config.deserialize(host_node)
+            
+        device_node = root.find("Device_Parameter_Set")
+        if device_node is not None:
+            self.ssd_device_config.deserialize(device_node)
+
+    def deserialize_workload(self, file_path):
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        
+        scenarios = []
+        for scenario_node in root.findall("IO_Scenario"):
+            scenario = IOScenario()
+            for flow_node in scenario_node:
+                if flow_node.tag == "IO_Flow_Parameter_Set_Synthetic":
+                    flow = IOFlowParameterSetSynthetic()
+                    flow.deserialize(flow_node)
+                    scenario.flow_definitions.append(flow)
+                elif flow_node.tag == "IO_Flow_Parameter_Set_Trace_Based":
+                    flow = IOFlowParameterSetTraceBased()
+                    flow.deserialize(flow_node)
+                    scenario.flow_definitions.append(flow)
+            scenarios.append(scenario)
+        return scenarios
+
+
+
+================================================
+FILE: mqsim/exec/host_system.py
+================================================
+class PCIeRootComplex:
+    def __init__(self, pcie_link, ssd_host_interface):
+        self.pcie_link = pcie_link
+        self.ssd_host_interface = ssd_host_interface
+
+class PCIeLink:
+    def __init__(self, lane_count):
+        self.lane_count = lane_count
+
+class PCIeSwitch:
+    def __init__(self, pcie_link, ssd_host_interface):
+        self.pcie_link = pcie_link
+        self.ssd_host_interface = ssd_host_interface
+
+class HostSystem:
+    def __init__(self, parameters, preconditioning_required, ssd_host_interface):
+        self.parameters = parameters
+        self.preconditioning_required = preconditioning_required
+        self.ssd_host_interface = ssd_host_interface
+        
+        # Initialize PCIe infrastructure
+        self.pcie_link = PCIeLink(lane_count=parameters.pcie_lane_count)
+        self.pcie_root_complex = PCIeRootComplex(self.pcie_link, ssd_host_interface)
+        self.pcie_switch = PCIeSwitch(self.pcie_link, ssd_host_interface)
+        
+        self.io_flows = []
+        self.ssd_device = None
+
+    def attach_ssd_device(self, ssd_device):
+        self.ssd_device = ssd_device
+
+    def add_io_flow(self, flow):
+        self.io_flows.append(flow)
+
+    def get_io_flows(self):
+        return self.io_flows
+
+
+
+================================================
+FILE: mqsim/exec/ssd_device.py
+================================================
+from mqsim.ssd.ftl import FTL
+from mqsim.ssd.data_cache_manager import DataCacheManagerSimple, CachingMode
+from mqsim.ssd.host_interface_nvme import HostInterfaceNVMe
+from mqsim.ssd.nvm_phy import NVMPhy
+
+class SSDDevice:
+    def __init__(self, parameters, io_flows):
+        self.parameters = parameters
+        self.io_flows = io_flows
+        self.memory_type = parameters.memory_type
+        self.channel_count = parameters.flash_channel_count
+        self.chip_no_per_channel = getattr(parameters, 'chip_no_per_channel', 4)
+        
+        # 1. Host Interface
+        self.host_interface = HostInterfaceNVMe(
+            id="SSDDevice.HostInterface",
+            max_lsa=1024*1024*1024, 
+            submission_queue_depth=parameters.io_queue_depth,
+            completion_queue_depth=parameters.io_queue_depth,
+            no_of_input_streams=len(io_flows) if io_flows else 1,
+            queue_fetch_size=parameters.queue_fetch_size,
+            sectors_per_page=parameters.flash_params.page_capacity // 512
+        )
+        
+        # 2. NVM Firmware (FTL)
+        self.firmware = FTL(
+            id="SSDDevice.FTL",
+            channel_no=self.channel_count,
+            chip_no_per_channel=self.chip_no_per_channel,
+            die_no_per_chip=parameters.flash_params.die_no_per_chip,
+            plane_no_per_die=parameters.flash_params.plane_no_per_die,
+            block_no_per_plane=parameters.flash_params.block_no_per_plane,
+            page_no_per_block=parameters.flash_params.page_no_per_block,
+            page_size_in_sectors=parameters.flash_params.page_capacity // 512,
+            over_provisioning_ratio=parameters.overprovisioning_ratio,
+            seed=parameters.seed
+        )
+        self.firmware.set_host_interface(self.host_interface)
+        
+        # Calculate max LSA based on logical pages
+        self.host_interface.max_lsa = self.firmware.address_mapping_unit.no_of_logical_pages * self.firmware.page_size_in_sectors - 1
+        read_latencies = [parameters.flash_params.page_read_latency_lsb, parameters.flash_params.page_read_latency_lsb]
+        program_latencies = [parameters.flash_params.page_program_latency_lsb, parameters.flash_params.page_program_latency_lsb]
+        
+        self.phy = NVMPhy(
+            id="SSDDevice.PHY",
+            channel_count=self.channel_count,
+            chip_no_per_channel=self.chip_no_per_channel,
+            flash_technology=parameters.flash_params.flash_technology,
+            die_no=parameters.flash_params.die_no_per_chip,
+            plane_no=parameters.flash_params.plane_no_per_die,
+            read_latencies=read_latencies,
+            program_latencies=program_latencies,
+            erase_latency=parameters.flash_params.block_erase_latency,
+            tsu=self.firmware.tsu,
+            suspend_program_latency=getattr(parameters.flash_params, 'suspend_program_latency', 0),
+            suspend_erase_latency=getattr(parameters.flash_params, 'suspend_erase_latency', 0)
+        )
+        self.firmware.phy = self.phy
+        self.firmware.tsu.phy = self.phy
+        self.firmware.gc_and_wl_unit.phy = self.phy
+
+        # 4. Data Cache Manager
+        caching_modes = [CachingMode.WRITE_CACHE] * len(io_flows) if io_flows else [CachingMode.WRITE_CACHE]
+        
+        self.cache_manager = DataCacheManagerSimple(
+            id="SSDDevice.CacheManager",
+            host_interface=self.host_interface,
+            nvm_firmware=self.firmware,
+            total_capacity_in_bytes=parameters.data_cache_capacity,
+            page_capacity_in_bytes=parameters.flash_params.page_capacity,
+            dram_row_size=parameters.data_cache_dram_row_size,
+            dram_data_rate=parameters.data_cache_dram_data_rate,
+            dram_burst_size=parameters.data_cache_dram_data_burst_size,
+            dram_tRCD=parameters.data_cache_dram_tRCD,
+            dram_tCL=parameters.data_cache_dram_tCL,
+            dram_tRP=parameters.data_cache_dram_tRP,
+            caching_mode_per_input_stream=caching_modes,
+            stream_count=len(caching_modes)
+        )
+        
+        self.host_interface.cache_manager = self.cache_manager
+        self.firmware.data_cache_manager = self.cache_manager
+        
+        self.channels = [] 
+
+    def attach_to_host(self, pcie_switch):
+        self.host_interface.pcie_switch = pcie_switch
+
+
+
+================================================
+FILE: mqsim/host/io_flow.py
+================================================
+from mqsim.utils.random_generator import RandomGenerator
+from mqsim.sim.sim_object import SimObject
+from mqsim.sim.engine import Engine
+
+class SyntheticIOFlow(SimObject):
+    def __init__(self, id, stream_id, read_ratio, start_lsa, end_lsa, seed, 
+                 queue_depth=1, stop_time=0, total_req_count=0, host_interface=None):
+        super().__init__(id)
+        self.stream_id = stream_id
+        self.read_ratio = read_ratio
+        self.start_lsa = start_lsa
+        self.end_lsa = end_lsa
+        self.queue_depth = queue_depth
+        self.stop_time = stop_time
+        self.total_req_count = total_req_count
+        self.host_interface = host_interface
+        self.rng = RandomGenerator(seed)
+        
+        self.generated_request_count = 0
+        self.serviced_request_count = 0
+        
+        # Stats
+        self.total_device_response_time = 0
+
+    def generate_next_request(self):
+        if self.stop_time > 0 and Engine().time >= self.stop_time:
+            return None
+        if self.total_req_count > 0 and self.generated_request_count >= self.total_req_count:
+            return None
+            
+        # Determine request type
+        prob = self.rng.float_random()
+        req_type = "READ" if prob < self.read_ratio else "WRITE"
+        
+        # Determine LSA (Uniform)
+        lsa = self.rng.uniform_uint(self.start_lsa, self.end_lsa)
+        
+        self.generated_request_count += 1
+        return {
+            'type': req_type,
+            'lsa': lsa,
+            'size': 8, # Fixed size for now
+            'arrival_time': Engine().time
+        }
+
+    def start_simulation(self):
+        # Schedule the first execution event at t=1
+        Engine().register_sim_event(1, self)
+
+    def execute_sim_event(self, event):
+        # Initial burst to fill the queue depth
+        for _ in range(self.queue_depth):
+            req = self.generate_next_request()
+            if req and self.host_interface:
+                self.host_interface.submit_io_request(self.stream_id, req)
+
+    def consume_io_request(self, host_req):
+        """
+        Called when a request is finished by the SSD.
+        """
+        self.serviced_request_count += 1
+        completion_time = Engine().time
+        self.total_device_response_time += (completion_time - host_req['arrival_time'])
+        
+        # In QUEUE_DEPTH mode, generate a new one to maintain depth
+        new_req = self.generate_next_request()
+        if new_req and self.host_interface:
+            self.host_interface.submit_io_request(self.stream_id, new_req)
+
+
+
+================================================
+FILE: mqsim/nvm_chip/flash_chip.py
+================================================
+from mqsim.sim.sim_object import SimObject
+from mqsim.sim.engine import Engine
+from mqsim.utils.signal import Signal
+
+class ChipStatus:
+    IDLE = 0
+    BUSY = 1
+
+class DieStatus:
+    IDLE = 0
+    BUSY = 1
+
+class Die:
+    def __init__(self, die_id, planes_per_die):
+        self.die_id = die_id
+        self.planes_per_die = planes_per_die
+        self.status = DieStatus.IDLE
+        self.current_command = None
+        self.suspended_command = None
+        self.remaining_exec_time = 0
+        self.expected_finish_time = 0
+        self.finish_event = None
+        self.on_idle = Signal()
+
+class FlashChip(SimObject):
+    def __init__(self, obj_id, channel_id, local_chip_id, 
+                 flash_technology, die_no, planes_per_die,
+                 read_latencies, program_latencies, erase_latency,
+                 suspend_program_latency=0, suspend_erase_latency=0):
+        super().__init__(obj_id)
+        self.channel_id = channel_id
+        self.chip_id = local_chip_id
+        self.flash_technology = flash_technology
+        self.die_no = die_no
+        self.planes_per_die = planes_per_die
+        self.read_latencies = read_latencies
+        self.program_latencies = program_latencies
+        self.erase_latency = erase_latency
+        self.suspend_program_latency = suspend_program_latency
+        self.suspend_erase_latency = suspend_erase_latency
+        
+        self.dies = [Die(i, planes_per_die) for i in range(die_no)]
+        self.on_idle = Signal()
+
+    @property
+    def status(self):
+        return ChipStatus.BUSY if any(d.status == DieStatus.BUSY for d in self.dies) else ChipStatus.IDLE
+
+    def get_command_execution_latency(self, command_type, page_id):
+        latency_type = 0
+        if self.flash_technology == "MLC":
+            latency_type = page_id % 2
+        elif self.flash_technology == "TLC":
+            if page_id <= 5:
+                latency_type = 0
+            elif page_id <= 7:
+                latency_type = 1
+            else:
+                latency_type = ((page_id - 8) >> 1) % 3
+        else: # SLC
+            latency_type = 0
+
+        if "READ" in command_type:
+            return self.read_latencies[latency_type]
+        elif "PROGRAM" in command_type:
+            return self.program_latencies[latency_type]
+        elif "ERASE" in command_type:
+            return self.erase_latency
+        
+        return 0
+
+    def start_command_execution(self, command_type, die_id, page_id):
+        die = self.dies[die_id]
+        if die.status != DieStatus.IDLE:
+            raise RuntimeError(f"Cannot start command on busy die {die_id} of chip {self.id}")
+            
+        die.status = DieStatus.BUSY
+        latency = self.get_command_execution_latency(command_type, page_id)
+        
+        die.expected_finish_time = Engine().time + latency
+        die.current_command = command_type
+        die.finish_event = Engine().register_sim_event(die.expected_finish_time, self, 
+                                                       parameters={"die_id": die_id, "command_type": command_type})
+
+    def suspend(self, die_id):
+        die = self.dies[die_id]
+        if die.status != DieStatus.BUSY:
+            return
+            
+        die.remaining_exec_time = die.expected_finish_time - Engine().time
+        Engine().ignore_sim_event(die.finish_event)
+        die.finish_event = None
+        
+        die.suspended_command = die.current_command
+        die.current_command = None
+        die.status = DieStatus.IDLE
+        # Notify TSU that this die is now free to take another command (e.g. READ)
+        self.on_idle.fire(self, die_id)
+
+    def resume(self, die_id):
+        die = self.dies[die_id]
+        if die.suspended_command is None:
+            return
+            
+        die.status = DieStatus.BUSY
+        die.current_command = die.suspended_command
+        die.suspended_command = None
+        
+        die.expected_finish_time = Engine().time + die.remaining_exec_time
+        die.finish_event = Engine().register_sim_event(die.expected_finish_time, self,
+                                                       parameters={"die_id": die_id, "command_type": die.current_command})
+
+    def execute_sim_event(self, event):
+        params = event.parameters
+        die_id = params["die_id"]
+        die = self.dies[die_id]
+        
+        die.status = DieStatus.IDLE
+        die.current_command = None
+        die.finish_event = None
+        
+        self.on_idle.fire(self, die_id)
+
+
+
+================================================
+FILE: mqsim/sim/engine.py
+================================================
+import heapq
+
+class SimEvent:
+    def __init__(self, fire_time, target_object, parameters=None, type=0):
+        self.fire_time = fire_time
+        self.target_object = target_object
+        self.parameters = parameters
+        self.type = type
+        self.ignore = False
+
+    def __lt__(self, other):
+        return self.fire_time < other.fire_time
+
+class Engine:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(Engine, cls).__new__(cls)
+            cls._instance._reset()
+        return cls._instance
+
+    def _reset(self):
+        self._sim_time = 0
+        self._event_list = []
+        self._started = False
+        self._stop = False
+        self._objects = {}
+
+    @property
+    def time(self):
+        return self._sim_time
+
+    def add_object(self, obj):
+        self._objects[obj.id] = obj
+
+    def get_object(self, obj_id):
+        return self._objects.get(obj_id)
+
+    def register_sim_event(self, fire_time, target_object, parameters=None, type=0):
+        event = SimEvent(fire_time, target_object, parameters, type)
+        heapq.heappush(self._event_list, event)
+        return event
+
+    def ignore_sim_event(self, event):
+        if event:
+            event.ignore = True
+
+    def start_simulation(self):
+        self._started = True
+        
+        # 1. Validate config
+        for obj in self._objects.values():
+            obj.validate_simulation_config()
+            
+        # 2. Setup triggers
+        for obj in self._objects.values():
+            obj.setup_triggers()
+            
+        # 3. Start simulation for all objects
+        for obj in self._objects.values():
+            obj.start_simulation()
+
+        # 4. Main event loop
+        while self._event_list and not self._stop:
+            event = heapq.heappop(self._event_list)
+            if event.ignore:
+                continue
+            
+            self._sim_time = event.fire_time
+            event.target_object.execute_sim_event(event)
+        self._started = False
+
+    def stop_simulation(self):
+        self._stop = True
+
+    def reset(self):
+        self._reset()
+
+
+
+================================================
+FILE: mqsim/sim/sim_object.py
+================================================
+from abc import ABC, abstractmethod
+
+class SimObject(ABC):
+    def __init__(self, id):
+        self.id = id
+
+    @abstractmethod
+    def execute_sim_event(self, event):
+        pass
+
+    def start_simulation(self):
+        pass
+
+    def validate_simulation_config(self):
+        pass
+
+    def setup_triggers(self):
+        pass
+
+
+
+================================================
+FILE: mqsim/ssd/data_cache_manager.py
+================================================
+from abc import abstractmethod
+from mqsim.sim.sim_object import SimObject
+from enum import Enum
+
+class CachingMode(Enum):
+    WRITE_CACHE = 1
+    READ_CACHE = 2
+    WRITE_READ_CACHE = 3
+    TURNED_OFF = 4
+
+class CacheSharingMode(Enum):
+    SHARED = 1
+    EQUAL_PARTITIONING = 2
+
+class DataCacheManagerBase(SimObject):
+    def __init__(self, id, host_interface, nvm_firmware, 
+                 dram_row_size, dram_data_rate, dram_burst_size, 
+                 dram_tRCD, dram_tCL, dram_tRP,
+                 caching_mode_per_input_stream, sharing_mode, stream_count):
+        super().__init__(id)
+        self.host_interface = host_interface
+        self.nvm_firmware = nvm_firmware
+        self.dram_row_size = dram_row_size
+        self.dram_data_rate = dram_data_rate
+        self.dram_burst_size = dram_burst_size
+        self.dram_tRCD = dram_tRCD
+        self.dram_tCL = dram_tCL
+        self.dram_tRP = dram_tRP
+        self.caching_mode_per_input_stream = caching_mode_per_input_stream
+        self.sharing_mode = sharing_mode
+        self.stream_count = stream_count
+        
+        # Calculate burst transfer time
+        # MT/s is millions of transfers per second.
+        self.dram_burst_transfer_time_ddr = 1.0 / (dram_data_rate * 1e6) * 1e9 # in nanoseconds
+
+    @abstractmethod
+    def process_new_user_request(self, user_request):
+        pass
+
+def estimate_dram_access_time(memory_access_size_in_byte, dram_row_size, 
+                              dram_burst_size_in_bytes, dram_burst_transfer_time_ddr, 
+                              tRCD, tCL, tRP):
+    """
+    Estimates the DRAM access time for caching operations based on hardware timings.
+    Ported from MQSim Data_Cache_Manager_Base.h
+    """
+    if memory_access_size_in_byte <= dram_row_size:
+        return float(tRCD + tCL + (memory_access_size_in_byte / dram_burst_size_in_bytes / 2.0) * dram_burst_transfer_time_ddr)
+    else:
+        # Crosses a row boundary, requires tRP (precharge) overhead
+        rows_accessed = int(memory_access_size_in_byte / dram_row_size)
+        time_per_row = (dram_row_size / dram_burst_size_in_bytes / 2.0 * dram_burst_transfer_time_ddr) + tRP
+        
+        remaining_bytes = memory_access_size_in_byte % dram_row_size
+        time_for_remainder = (remaining_bytes / dram_burst_size_in_bytes / 2.0) * dram_burst_transfer_time_ddr
+        
+        return float((tRCD + tCL + time_per_row * rows_accessed) + tRCD + tCL + time_for_remainder)
+
+class CacheSlotStatus(Enum):
+    EMPTY = 1
+    CLEAN = 2
+    DIRTY_NO_FLASH_WRITEBACK = 3
+    DIRTY_FLASH_WRITEBACK = 4
+
+class DataCacheSlot:
+    def __init__(self, lpa=None, status=CacheSlotStatus.EMPTY):
+        self.lpa = lpa
+        self.status = status
+        self.state_bitmap = 0
+        self.timestamp = 0
+
+class DataCacheFlash:
+    def __init__(self, capacity_in_pages):
+        self.capacity_in_pages = capacity_in_pages
+        self.slots = {} # LPN -> DataCacheSlot
+        self.lru_list = [] # List of LPNs
+        
+    def exists(self, lpn):
+        return lpn in self.slots
+        
+    def is_full(self):
+        return len(self.slots) >= self.capacity_in_pages
+        
+    def get_slot(self, lpn):
+        if lpn in self.slots:
+            # Move to end of LRU
+            self.lru_list.remove(lpn)
+            self.lru_list.append(lpn)
+            return self.slots[lpn]
+        return None
+        
+    def insert(self, lpn, status):
+        if self.is_full():
+            self.evict_lru()
+        slot = DataCacheSlot(lpn, status)
+        self.slots[lpn] = slot
+        self.lru_list.append(lpn)
+        return slot
+        
+    def evict_lru(self):
+        if not self.lru_list:
+            return None
+        lpn_to_evict = self.lru_list.pop(0)
+        evicted_slot = self.slots.pop(lpn_to_evict)
+        return evicted_slot
+
+class DataCacheManagerSimple(DataCacheManagerBase):
+    def __init__(self, id, host_interface, nvm_firmware, 
+                 total_capacity_in_bytes, page_capacity_in_bytes,
+                 dram_row_size, dram_data_rate, dram_burst_size, 
+                 dram_tRCD, dram_tCL, dram_tRP,
+                 caching_mode_per_input_stream, stream_count):
+        super().__init__(id, host_interface, nvm_firmware, 
+                         dram_row_size, dram_data_rate, dram_burst_size, 
+                         dram_tRCD, dram_tCL, dram_tRP,
+                         caching_mode_per_input_stream, CacheSharingMode.SHARED, stream_count)
+        
+        self.capacity_in_bytes = total_capacity_in_bytes
+        self.capacity_in_pages = total_capacity_in_bytes // page_capacity_in_bytes
+        self.data_cache = DataCacheFlash(self.capacity_in_pages)
+        self.page_capacity_in_bytes = page_capacity_in_bytes
+        
+    def process_new_user_request(self, user_request):
+        if self.caching_mode_per_input_stream[user_request.stream_id] == CachingMode.TURNED_OFF:
+            self.nvm_firmware.segment_user_request(user_request)
+            return
+
+        if user_request.type == "WRITE":
+            # Estimate DRAM access time for cache insert
+            access_time = estimate_dram_access_time(
+                user_request.size_in_sectors * 512, 
+                self.dram_row_size,
+                self.dram_burst_size * 64, # Simplified burst size in bytes
+                self.dram_burst_transfer_time_ddr,
+                self.dram_tRCD, self.dram_tCL, self.dram_tRP
+            )
+            
+            import math
+            # Simplified: just acknowledge after DRAM delay + some host interface delay
+            # C++ MQSim shows ~40us for NVMe writes in this config
+            host_interface_delay = 40000 
+            
+            from mqsim.sim.engine import Engine
+            delay = max(1, math.ceil(access_time)) + host_interface_delay
+            Engine().register_sim_event(Engine().time + delay, self, parameters=user_request)
+            
+            # Also start actual NVM write in background (simplified destaging)
+            self.nvm_firmware.segment_user_request(user_request)
+        else:
+            # READ: for now just delegate to FTL
+            self.nvm_firmware.segment_user_request(user_request)
+
+    def execute_sim_event(self, event):
+        # Acknowledge the user request (Write Cache Hit)
+        user_request = event.parameters
+        self.host_interface.finish_user_request(user_request)
+
+
+
+================================================
+FILE: mqsim/ssd/flash_block_manager.py
+================================================
+class BlockPoolSlot:
+    def __init__(self, block_id, page_no_per_block):
+        self.block_id = block_id
+        self.current_page_write_index = 0
+        self.invalid_page_count = 0
+        self.erase_count = 0
+        # Simple boolean list to track valid/invalid pages
+        self.invalid_page_bitmap = [False] * page_no_per_block
+
+class PlaneBookKeeping:
+    def __init__(self, block_no_per_plane, page_no_per_block):
+        self.blocks = [BlockPoolSlot(i, page_no_per_block) for i in range(block_no_per_plane)]
+        self.free_block_pool = list(range(block_no_per_plane))
+        self.data_wf = None  # Data Write Frontier (the active block)
+
+    def get_free_block(self):
+        if not self.free_block_pool:
+            raise RuntimeError("No free blocks available!")
+        block_id = self.free_block_pool.pop(0)
+        return self.blocks[block_id]
+
+class FlashBlockManager:
+    def __init__(self, channel_count, chip_no_per_channel, die_no_per_chip, 
+                 plane_no_per_die, block_no_per_plane, page_no_per_block):
+        
+        self.page_no_per_block = page_no_per_block
+        self.gc_unit = None
+        
+        # Initialize the 4D array: Channel -> Chip -> Die -> Plane -> PlaneBookKeeping
+        self.plane_manager = [[[[PlaneBookKeeping(block_no_per_plane, page_no_per_block) 
+                                 for _ in range(plane_no_per_die)] 
+                                for _ in range(die_no_per_chip)] 
+                               for _ in range(chip_no_per_channel)] 
+                              for _ in range(channel_count)]
+
+    def set_gc_unit(self, gc_unit):
+        self.gc_unit = gc_unit
+
+    def _get_plane_bookkeeping(self, address):
+        return self.plane_manager[address["channel"]][address["chip"]][address["die"]][address["plane"]]
+
+    def allocate_page_for_user_write(self, stream_id, address):
+        plane_record = self._get_plane_bookkeeping(address)
+        
+        # If there is no active write block, or the active block is full, get a new one
+        if plane_record.data_wf is None or plane_record.data_wf.current_page_write_index == self.page_no_per_block:
+            plane_record.data_wf = plane_record.get_free_block()
+        
+        wf = plane_record.data_wf
+        allocated_page_id = wf.current_page_write_index
+        wf.current_page_write_index += 1
+        
+        # Return a copy of the address updated with block and page
+        return {
+            "channel": address["channel"],
+            "chip": address["chip"],
+            "die": address["die"],
+            "plane": address["plane"],
+            "block": wf.block_id,
+            "page": allocated_page_id
+        }
+
+    def invalidate_page(self, address, block_id, page_id):
+        plane_record = self._get_plane_bookkeeping(address)
+        block = plane_record.blocks[block_id]
+        
+        if not block.invalid_page_bitmap[page_id]:
+            block.invalid_page_bitmap[page_id] = True
+            block.invalid_page_count += 1
+
+    def get_invalid_page_count(self, address, block_id):
+        plane_record = self._get_plane_bookkeeping(address)
+        return plane_record.blocks[block_id].invalid_page_count
+
+
+
+================================================
+FILE: mqsim/ssd/ftl.py
+================================================
+from mqsim.sim.sim_object import SimObject
+from mqsim.ssd.flash_block_manager import FlashBlockManager
+from mqsim.ssd.mapping_unit import PageLevelAddressMapping
+from mqsim.ssd.tsu_outoforder import TSUOutOfOrder
+from mqsim.ssd.gc_and_wl_unit import GCUnit
+from mqsim.ssd.nvm_transaction import NVMTransaction, TransactionType, TransactionSource
+from mqsim.utils.random_generator import RandomGenerator
+
+class FTL(SimObject):
+    def __init__(self, id, channel_no, chip_no_per_channel, die_no_per_chip, 
+                 plane_no_per_die, block_no_per_plane, page_no_per_block, 
+                 page_size_in_sectors, over_provisioning_ratio, seed):
+        super().__init__(id)
+        self.channel_no = channel_no
+        self.chip_no_per_channel = chip_no_per_channel
+        self.die_no_per_chip = die_no_per_chip
+        self.plane_no_per_die = plane_no_per_die
+        self.block_no_per_plane = block_no_per_plane
+        self.page_no_per_block = page_no_per_block
+        self.page_size_in_sectors = page_size_in_sectors
+        self.over_provisioning_ratio = over_provisioning_ratio
+        
+        self.random_generator = RandomGenerator(seed)
+
+        # 1. Initialize Block Manager
+        self.block_manager = FlashBlockManager(
+            channel_no, chip_no_per_channel, die_no_per_chip, 
+            plane_no_per_die, block_no_per_plane, page_no_per_block
+        )
+
+        # 2. Initialize Mapping Unit
+        total_physical_pages = (channel_no * chip_no_per_channel * 
+                                die_no_per_chip * plane_no_per_die * 
+                                block_no_per_plane * page_no_per_block)
+        
+        no_of_logical_pages = int(total_physical_pages * (1.0 - over_provisioning_ratio))
+        self.address_mapping_unit = PageLevelAddressMapping(no_of_logical_pages)
+
+        # 3. Initialize Transaction Scheduling Unit (TSU)
+        self.tsu = TSUOutOfOrder(f"{id}.TSU", channel_no, chip_no_per_channel)
+
+        # 4. Initialize GC and WL Unit
+        self.gc_and_wl_unit = GCUnit(
+            f"{id}.GCUnit", self.block_manager, self.tsu, "RGA"
+        )
+        self.block_manager.set_gc_unit(self.gc_and_wl_unit)
+
+        self.phy = None
+        self.data_cache_manager = None
+        self.host_interface = None
+
+    def set_host_interface(self, host_interface):
+        self.host_interface = host_interface
+        self.tsu.host_interface = host_interface
+
+    def segment_user_request(self, user_request):
+        """
+        Breaks a host-level request into page-sized NVM transactions.
+        """
+        lsa = user_request.lsa
+        size = user_request.size_in_sectors
+        
+        transactions = []
+        
+        # Calculate the starting LPA and offset
+        current_lsa = lsa
+        remaining_size = size
+        
+        self.tsu.prepare_for_transaction_submit()
+        
+        while remaining_size > 0:
+            lpa = current_lsa // self.page_size_in_sectors
+            sectors_in_this_page = min(remaining_size, 
+                                       self.page_size_in_sectors - (current_lsa % self.page_size_in_sectors))
+            
+            tr = NVMTransaction(
+                stream_id=user_request.stream_id,
+                transaction_type=user_request.type,
+                source=TransactionSource.USERIO,
+                lpa=lpa,
+                user_request=user_request
+            )
+            
+            # Simple Static Plane Allocation CWDP (Channel-Way-Die-Plane)
+            # Ported simplified allocation from C++
+            channel_id = lpa % self.channel_no
+            chip_id = (lpa // self.channel_no) % self.chip_no_per_channel
+            die_id = (lpa // (self.channel_no * self.chip_no_per_channel)) % self.die_no_per_chip
+            plane_id = (lpa // (self.channel_no * self.chip_no_per_channel * self.die_no_per_chip)) % self.plane_no_per_die
+            
+            tr.address = {
+                "channel": channel_id,
+                "chip": chip_id,
+                "die": die_id,
+                "plane": plane_id,
+                "block": 0, # To be allocated by block manager if write
+                "page": 0
+            }
+            
+            if tr.type == "WRITE":
+                # Allocate a new PPA
+                allocated_addr = self.block_manager.allocate_page_for_user_write(tr.stream_id, tr.address)
+                tr.address = allocated_addr
+                tr.ppa = 0 # Dummy PPA
+                self.address_mapping_unit.update_mapping_info(tr.stream_id, tr.lpa, tr.ppa)
+            else:
+                # Read: Look up PPA
+                tr.ppa = self.address_mapping_unit.get_ppa(tr.stream_id, tr.lpa)
+                if tr.ppa == -1:
+                    # Not written yet, return dummy data (still takes time)
+                    pass
+            
+            transactions.append(tr)
+            user_request.transaction_list.append(tr)
+            
+            self.tsu.submit_transaction(tr)
+            
+            current_lsa += sectors_in_this_page
+            remaining_size -= sectors_in_this_page
+            
+        self.tsu.schedule()
+                    
+        return transactions
+
+    def execute_sim_event(self, event):
+        pass
+
+
+
+================================================
+FILE: mqsim/ssd/gc_and_wl_unit.py
+================================================
+from mqsim.sim.sim_object import SimObject
+
+class GCTransaction:
+    def __init__(self, type, source, address, related_write=None, related_read=None, related_erase=None):
+        self.type = type
+        self.source = source
+        self.address = address
+        self.related_write = related_write
+        self.related_read = related_read
+        self.related_erase = related_erase
+        self.page_movement_activities = []
+
+class GCUnit(SimObject):
+    def __init__(self, id, block_manager, tsu=None, block_selection_policy="GREEDY"):
+        super().__init__(id)
+        self.block_manager = block_manager
+        self.tsu = tsu
+        self.block_selection_policy = block_selection_policy
+
+    def select_victim_block(self, plane_address):
+        plane_record = self.block_manager._get_plane_bookkeeping(plane_address)
+        
+        victim_block_id = -1
+        max_invalid_pages = -1
+        
+        if self.block_selection_policy == "GREEDY":
+            for block in plane_record.blocks:
+                if plane_record.data_wf and block.block_id == plane_record.data_wf.block_id:
+                    continue
+                
+                if block.block_id in plane_record.free_block_pool:
+                    continue
+
+                if block.invalid_page_count > max_invalid_pages:
+                    max_invalid_pages = block.invalid_page_count
+                    victim_block_id = block.block_id
+                    
+        return victim_block_id
+
+    def check_gc_required(self, plane_address):
+        victim_block_id = self.select_victim_block(plane_address)
+        if victim_block_id == -1:
+            return
+            
+        plane_record = self.block_manager._get_plane_bookkeeping(plane_address)
+        block = plane_record.blocks[victim_block_id]
+        
+        # Only execute GC if we have a TSU attached
+        if self.tsu:
+            self.tsu.prepare_for_transaction_submit()
+            
+            # Create Erase Transaction
+            erase_addr = dict(plane_address, block=victim_block_id)
+            gc_erase_tr = GCTransaction("ERASE", "GC_WL", erase_addr)
+            
+            # Check for valid pages that need moving
+            valid_pages_count = block.current_page_write_index - block.invalid_page_count
+            if valid_pages_count > 0:
+                for page_id in range(block.current_page_write_index):
+                    # If page is valid (not in the invalid bitmap)
+                    if not block.invalid_page_bitmap[page_id]:
+                        page_addr = dict(erase_addr, page=page_id)
+                        
+                        gc_read = GCTransaction("READ", "GC_WL", page_addr)
+                        gc_write = GCTransaction("WRITE", "GC_WL", page_addr, related_read=gc_read, related_erase=gc_erase_tr)
+                        gc_read.related_write = gc_write
+                        
+                        gc_erase_tr.page_movement_activities.append(gc_write)
+                        
+                        # Only submit read; write happens after read finishes
+                        self.tsu.submit_transaction(gc_read)
+            
+            self.tsu.submit_transaction(gc_erase_tr)
+            self.tsu.schedule()
+            
+        return victim_block_id
+
+    def execute_sim_event(self, event):
+        pass
+
+
+
+================================================
+FILE: mqsim/ssd/host_interface_nvme.py
+================================================
+from mqsim.sim.sim_object import SimObject
+from mqsim.ssd.user_request import UserRequest
+
+class InputStreamNVMe:
+    def __init__(self, priority_class, start_lsa, end_lsa,
+                 submission_queue_base_address, submission_queue_size,
+                 completion_queue_base_address, completion_queue_size):
+        self.priority_class = priority_class
+        self.start_lsa = start_lsa
+        self.end_lsa = end_lsa
+        self.submission_queue_base_address = submission_queue_base_address
+        self.submission_queue_size = submission_queue_size
+        self.completion_queue_base_address = completion_queue_base_address
+        self.completion_queue_size = completion_queue_size
+        
+        self.submission_head = 0
+        self.submission_tail = 0
+        self.completion_head = 0
+        self.completion_tail = 0
+        
+        self.waiting_user_requests = []
+        self.completed_user_requests = []
+        self.on_the_fly_requests = 0
+        self.io_flow = None # Link back to Host IO Flow
+
+class HostInterfaceNVMe(SimObject):
+    def __init__(self, id, max_lsa, submission_queue_depth, completion_queue_depth,
+                 no_of_input_streams, queue_fetch_size, sectors_per_page):
+        super().__init__(id)
+        self.max_lsa = max_lsa
+        self.submission_queue_depth = submission_queue_depth
+        self.completion_queue_depth = completion_queue_depth
+        self.no_of_input_streams = no_of_input_streams
+        self.queue_fetch_size = queue_fetch_size
+        self.sectors_per_page = sectors_per_page
+        
+        self.input_streams = []
+        self.cache_manager = None # Will be linked later
+
+    def create_new_stream(self, priority_class, start_lsa, end_lsa,
+                          submission_queue_base_address, completion_queue_base_address):
+        stream_id = len(self.input_streams)
+        if stream_id >= self.no_of_input_streams:
+            raise RuntimeError("Maximum number of NVMe streams reached!")
+            
+        stream = InputStreamNVMe(
+            priority_class, start_lsa, end_lsa,
+            submission_queue_base_address, self.submission_queue_depth,
+            completion_queue_base_address, self.completion_queue_depth
+        )
+        self.input_streams.append(stream)
+        return stream_id
+
+    def set_io_flow(self, stream_id, io_flow):
+        self.input_streams[stream_id].io_flow = io_flow
+
+    def submit_io_request(self, stream_id, host_req):
+        stream = self.input_streams[stream_id]
+        stream.submission_tail = (stream.submission_tail + 1) % stream.submission_queue_size
+        
+        # Create UserRequest
+        user_req = UserRequest(
+            stream_id=stream_id,
+            type=host_req['type'],
+            lsa=host_req['lsa'],
+            size_in_sectors=host_req['size']
+        )
+        # Store original host request info for reporting/timing
+        user_req.host_request = host_req
+        
+        stream.waiting_user_requests.append(user_req)
+        stream.on_the_fly_requests += 1
+        
+        if self.cache_manager:
+            self.cache_manager.process_new_user_request(user_req)
+            
+        return user_req
+
+    def finish_user_request(self, user_req):
+        """
+        Called by FTL or Cache when a user request is finished.
+        """
+        if user_req.already_finished:
+            return
+            
+        user_req.already_finished = True
+        stream = self.input_streams[user_req.stream_id]
+        stream.on_the_fly_requests -= 1
+        
+        # Notify IO Flow
+        if stream.io_flow:
+            stream.io_flow.consume_io_request(user_req.host_request)
+
+    def execute_sim_event(self, event):
+        pass
+
+
+
+================================================
+FILE: mqsim/ssd/mapping_unit.py
+================================================
+class PageLevelAddressMapping:
+    def __init__(self, no_of_logical_pages):
+        self.no_of_logical_pages = no_of_logical_pages
+        # Global Mapping Table: LPA -> PPA
+        # In MQSim this is often an array, but dict is better for Python sparse handling
+        self.gmt = {} 
+
+    def get_ppa(self, stream_id, lpa):
+        # In MQSim, each stream can have its own domain, 
+        # but for now we implement a shared global table
+        return self.gmt.get(lpa, -1)
+
+    def update_mapping_info(self, stream_id, lpa, ppa):
+        if lpa >= self.no_of_logical_pages:
+            raise ValueError(f"LPA {lpa} exceeds logical capacity {self.no_of_logical_pages}")
+        self.gmt[lpa] = ppa
+
+
+
+================================================
+FILE: mqsim/ssd/nvm_phy.py
+================================================
+from mqsim.sim.sim_object import SimObject
+from mqsim.nvm_chip.flash_chip import FlashChip
+
+class NVMPhy(SimObject):
+    def __init__(self, id, channel_count, chip_no_per_channel, 
+                 flash_technology, die_no, plane_no,
+                 read_latencies, program_latencies, erase_latency, tsu,
+                 suspend_program_latency=0, suspend_erase_latency=0):
+        super().__init__(id)
+        self.channel_count = channel_count
+        self.chip_no_per_channel = chip_no_per_channel
+        self.tsu = tsu
+        
+        # Initialize Chips
+        self.chips = []
+        for c in range(channel_count):
+            channel_chips = []
+            for i in range(chip_no_per_channel):
+                chip_id = f"{id}.Chip_{c}_{i}"
+                chip = FlashChip(chip_id, c, i, flash_technology, die_no, plane_no,
+                                 read_latencies, program_latencies, erase_latency,
+                                 suspend_program_latency, suspend_erase_latency)
+                
+                # Wire up signals: When chip is idle, tell TSU to service it
+                chip.on_idle.connect(self.tsu.handle_chip_idle_signal)
+                channel_chips.append(chip)
+            self.chips.append(channel_chips)
+
+    def get_chip(self, channel_id, chip_id):
+        return self.chips[channel_id][chip_id]
+
+    def execute_sim_event(self, event):
+        pass
+
+
+
+================================================
+FILE: mqsim/ssd/nvm_transaction.py
+================================================
+class TransactionType:
+    READ = "READ"
+    WRITE = "WRITE"
+    ERASE = "ERASE"
+
+class TransactionSource:
+    USERIO = "USERIO"
+    CACHE = "CACHE"
+    MAPPING = "MAPPING"
+    GC_WL = "GC_WL"
+
+class NVMTransaction:
+    def __init__(self, stream_id, transaction_type, source, lpa, ppa=None, user_request=None):
+        self.stream_id = stream_id
+        self.type = transaction_type
+        self.source = source
+        self.lpa = lpa
+        self.ppa = ppa
+        self.user_request = user_request
+        self.address = None # Physical address (channel, chip, die, plane, block, page)
+        self.suspend_required = False
+
+
+
+================================================
+FILE: mqsim/ssd/tsu_base.py
+================================================
+from abc import ABC, abstractmethod
+
+class TSUBase(ABC):
+    def __init__(self):
+        self.opened_scheduling_reqs = 0
+        self.transaction_receive_slots = []
+        self.transaction_dispatch_slots = []
+        self.phy = None
+
+    def prepare_for_transaction_submit(self):
+        self.opened_scheduling_reqs += 1
+        if self.opened_scheduling_reqs > 1:
+            return
+        self.transaction_receive_slots.clear()
+
+    def submit_transaction(self, transaction):
+        self.transaction_receive_slots.append(transaction)
+
+    @abstractmethod
+    def schedule(self):
+        pass
+
+    @abstractmethod
+    def service_read_transaction(self, chip):
+        pass
+
+    @abstractmethod
+    def service_write_transaction(self, chip):
+        pass
+
+    @abstractmethod
+    def service_erase_transaction(self, chip):
+        pass
+
+    def _transaction_is_ready(self, transaction):
+        if transaction.type == "READ":
+            return True
+        elif transaction.type == "WRITE":
+            return getattr(transaction, 'related_read', None) is None
+        elif transaction.type == "ERASE":
+            return len(getattr(transaction, 'page_movement_activities', [])) == 0
+        return True
+
+
+
+================================================
+FILE: mqsim/ssd/tsu_outoforder.py
+================================================
+from mqsim.ssd.tsu_base import TSUBase
+from mqsim.utils.signal import Signal
+from mqsim.nvm_chip.flash_chip import ChipStatus, DieStatus
+
+class TSUOutOfOrder(TSUBase):
+    def __init__(self, id, channel_count, chip_no_per_channel):
+        super().__init__()
+        self.id = id
+        self.channel_count = channel_count
+        self.chip_no_per_channel = chip_no_per_channel
+        
+        # Initialize 2D arrays of queues: [Channel][Chip]
+        self.user_read_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        self.user_write_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        self.gc_read_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        self.gc_write_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        self.gc_erase_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        self.mapping_read_queues = [[[] for _ in range(chip_no_per_channel)] for _ in range(channel_count)]
+        
+        # (Chip, Die) -> List of Active Transactions
+        self.active_transactions = {}
+        # (Chip, Die) -> List of Suspended Transactions
+        self.suspended_transactions = {}
+
+        self.on_transaction_finished = Signal()
+        self.host_interface = None # To be linked
+
+    def schedule(self):
+        affected_dies = set()
+        for trans in self.transaction_receive_slots:
+            channel_id = trans.address["channel"]
+            chip_id = trans.address["chip"]
+            die_id = trans.address.get("die", 0)
+            affected_dies.add((channel_id, chip_id, die_id))
+            
+            if trans.type == "READ":
+                if trans.source == "MAPPING":
+                    self.mapping_read_queues[channel_id][chip_id].append(trans)
+                elif trans.source == "GC_WL":
+                    self.gc_read_queues[channel_id][chip_id].append(trans)
+                else:
+                    self.user_read_queues[channel_id][chip_id].append(trans)
+            elif trans.type == "WRITE":
+                if trans.source == "GC_WL":
+                    self.gc_write_queues[channel_id][chip_id].append(trans)
+                else:
+                    self.user_write_queues[channel_id][chip_id].append(trans)
+            elif trans.type == "ERASE":
+                self.gc_erase_queues[channel_id][chip_id].append(trans)
+                
+        self.transaction_receive_slots.clear()
+        
+        # Trigger servicing for affected dies
+        if self.phy:
+            for channel_id, chip_id, die_id in affected_dies:
+                chip = self.phy.get_chip(channel_id, chip_id)
+                self.service_chip_requests(chip, die_id)
+
+    def handle_chip_idle_signal(self, chip, die_id=0):
+        # 1. Finish the previous transactions if any
+        if (chip, die_id) in self.active_transactions:
+            finished_txs = self.active_transactions.pop((chip, die_id))
+            
+            for finished_tr in finished_txs:
+                # Remove from user request's transaction list
+                if finished_tr.user_request:
+                    user_req = finished_tr.user_request
+                    if finished_tr in user_req.transaction_list:
+                        user_req.transaction_list.remove(finished_tr)
+                    
+                    # If all transactions for this user request are done, finish it
+                    if len(user_req.transaction_list) == 0:
+                        if self.host_interface:
+                            self.host_interface.finish_user_request(user_req)
+
+        # 2. Service the next request
+        self.service_chip_requests(chip, die_id)
+
+    def service_chip_requests(self, chip, die_id=0):
+        die = chip.dies[die_id]
+        if die.status == DieStatus.BUSY:
+            # Check if we can suspend for an urgent read
+            # In MQSim, only WRITE or ERASE can be suspended by READ
+            active_txs = self.active_transactions.get((chip, die_id))
+            if active_txs and active_txs[0].type in ["WRITE", "ERASE"]:
+                # Check for ready READs
+                queues = [self.mapping_read_queues[chip.channel_id][chip.chip_id],
+                          self.gc_read_queues[chip.channel_id][chip.chip_id],
+                          self.user_read_queues[chip.channel_id][chip.chip_id]]
+                
+                # We only suspend if the new transaction explicitly allows/requests it
+                # or if it is higher priority. For now, simple logic: any read can suspend.
+                # In a real port, we'd check if suspension is supported/enabled.
+                txs = self._find_ready_transactions(queues, die_id, die.planes_per_die)
+                if txs:
+                    # Suspend current
+                    chip.suspend(die_id)
+                    self.suspended_transactions[(chip, die_id)] = active_txs
+                    # Issue the read
+                    self._issue_command_to_chip(chip, txs, die_id)
+            return
+
+        # Die is IDLE. 
+        # First priority: resume suspended transactions if no higher priority reads are waiting
+        if (chip, die_id) in self.suspended_transactions:
+            # Check if there are still any pending READs that might have higher priority than resuming
+            # (In MQSim, usually you'd resume if no more suspending reads are left)
+            queues = [self.mapping_read_queues[chip.channel_id][chip.chip_id],
+                      self.gc_read_queues[chip.channel_id][chip.chip_id],
+                      self.user_read_queues[chip.channel_id][chip.chip_id]]
+            
+            if not self._any_ready_transaction(queues, die_id):
+                resumed_txs = self.suspended_transactions.pop((chip, die_id))
+                self.active_transactions[(chip, die_id)] = resumed_txs
+                chip.resume(die_id)
+                return
+
+        # Normal scheduling
+        if not self.service_read_transaction(chip, die_id):
+            if not self.service_write_transaction(chip, die_id):
+                self.service_erase_transaction(chip, die_id)
+
+    def _any_ready_transaction(self, queues, die_id):
+        for queue in queues:
+            for tx in queue:
+                if tx.address.get("die", 0) == die_id and self._transaction_is_ready(tx):
+                    return True
+        return False
+
+    def _find_ready_transactions(self, queues, die_id, max_planes):
+        """
+        Find up to 'max_planes' transactions that can be grouped into a multi-plane command.
+        They must target the same die, different planes, and the same page offset.
+        """
+        grouped_txs = []
+        plane_vector = 0
+        target_page_id = None
+        
+        for queue in queues:
+            # We iterate backwards or carefully because we might pop multiple items
+            i = 0
+            while i < len(queue) and len(grouped_txs) < max_planes:
+                tx = queue[i]
+                if tx.address.get("die", 0) == die_id and self._transaction_is_ready(tx):
+                    plane_id = tx.address.get("plane", 0)
+                    page_id = tx.address.get("page", 0)
+                    
+                    if (plane_vector & (1 << plane_id)) == 0:
+                        # Check if it's the first tx or if it matches the target page ID
+                        if target_page_id is None or target_page_id == page_id:
+                            target_page_id = page_id
+                            plane_vector |= (1 << plane_id)
+                            grouped_txs.append(queue.pop(i))
+                            continue # Don't increment i, as we popped the element
+                i += 1
+                
+            if len(grouped_txs) == max_planes:
+                break
+                
+        return grouped_txs
+
+    def service_read_transaction(self, chip, die_id):
+        channel_id = chip.channel_id
+        chip_id = chip.chip_id
+        
+        queues = [self.mapping_read_queues[channel_id][chip_id],
+                  self.gc_read_queues[channel_id][chip_id],
+                  self.user_read_queues[channel_id][chip_id]]
+                  
+        txs = self._find_ready_transactions(queues, die_id, chip.dies[die_id].planes_per_die)
+        if txs:
+            self._issue_command_to_chip(chip, txs, die_id)
+            return True
+        return False
+
+    def service_write_transaction(self, chip, die_id):
+        channel_id = chip.channel_id
+        chip_id = chip.chip_id
+        
+        queues = [self.gc_write_queues[channel_id][chip_id],
+                  self.user_write_queues[channel_id][chip_id]]
+                  
+        txs = self._find_ready_transactions(queues, die_id, chip.dies[die_id].planes_per_die)
+        if txs:
+            self._issue_command_to_chip(chip, txs, die_id)
+            return True
+        return False
+
+    def service_erase_transaction(self, chip, die_id):
+        channel_id = chip.channel_id
+        chip_id = chip.chip_id
+        
+        queues = [self.gc_erase_queues[channel_id][chip_id]]
+        txs = self._find_ready_transactions(queues, die_id, chip.dies[die_id].planes_per_die)
+        if txs:
+            self._issue_command_to_chip(chip, txs, die_id)
+            return True
+        return False
+
+    def _issue_command_to_chip(self, chip, transactions, die_id):
+        self.active_transactions[(chip, die_id)] = transactions
+        base_tx = transactions[0]
+        
+        if base_tx.type == "READ":
+            cmd_type = "READ_PAGE_MULTIPLANE" if len(transactions) > 1 else "READ_PAGE"
+        elif base_tx.type == "WRITE":
+            cmd_type = "PROGRAM_PAGE_MULTIPLANE" if len(transactions) > 1 else "PROGRAM_PAGE"
+        else:
+            cmd_type = "ERASE_BLOCK_MULTIPLANE" if len(transactions) > 1 else "ERASE_BLOCK"
+        
+        chip.start_command_execution(cmd_type, die_id, base_tx.address.get("page", 0))
+
+    def execute_sim_event(self, event): pass
+
+
+
+================================================
+FILE: mqsim/ssd/user_request.py
+================================================
+class UserRequest:
+    def __init__(self, stream_id, type, lsa, size_in_sectors):
+        self.stream_id = stream_id
+        self.type = type
+        self.lsa = lsa
+        self.size_in_sectors = size_in_sectors
+        self.transaction_list = []
+        self.sectors_serviced_from_cache = 0
+        self.already_finished = False
+        
+    @property
+    def is_finished(self):
+        return len(self.transaction_list) == 0 and self.sectors_serviced_from_cache == 0
+
+
+
+================================================
+FILE: mqsim/utils/random_generator.py
+================================================
+import random
+import math
+
+class RandomGenerator:
+    def __init__(self, seed):
+        self.seed = seed
+        self._rng = random.Random(seed)
+
+    def uniform(self, a, b):
+        return self._rng.uniform(a, b)
+
+    def uniform_uint(self, m, n):
+        return self._rng.randint(m, n)
+
+    def exponential(self, mean):
+        # Python's expovariate takes 1/mean
+        return self._rng.expovariate(1.0 / mean)
+
+    def normal(self, mean, stddev):
+        return self._rng.gauss(mean, stddev)
+
+    def get_uint(self, max_value):
+        return self._rng.randint(0, max_value)
+
+    def get_int(self, max_value):
+        return self._rng.randint(0, max_value)
+
+    def float_random(self):
+        return self._rng.random()
+
+
+
+================================================
+FILE: mqsim/utils/signal.py
+================================================
+class Signal:
+    """
+    A simple implementation of the Observer pattern to mirror
+    MQSim's function-pointer based signals.
+    """
+    def __init__(self):
+        self._handlers = []
+
+    def connect(self, handler):
+        self._handlers.append(handler)
+
+    def fire(self, *args, **kwargs):
+        for handler in self._handlers:
+            handler(*args, **kwargs)
+
+
