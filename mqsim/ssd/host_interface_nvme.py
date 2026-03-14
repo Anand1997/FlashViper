@@ -43,9 +43,14 @@ class HostInterfaceNVMe(SimObject):
         self.cache_manager = None # Will be linked later
         
         # PCIe Latency (simplified MQSim model)
-        # Latency = base_delay + (size / bandwidth)
         self.pcie_base_delay = 1000 # 1us
-        self.pcie_bandwidth = 1.0 # GB/s per lane (from config)
+        self.pcie_bandwidth = 1.0 # GB/s per lane
+        
+        # WRR Arbitration State
+        self.priority_weights = {"URGENT": 1000000, "HIGH": 4, "MEDIUM": 2, "LOW": 1}
+        self.current_wrr_stream_index = 0
+        self.remaining_weight_for_current_stream = 0
+        self.is_fetching = False
 
     def create_new_stream(self, priority_class, start_lsa, end_lsa,
                           submission_queue_base_address, completion_queue_base_address):
@@ -76,24 +81,56 @@ class HostInterfaceNVMe(SimObject):
         stream.submission_tail = (stream.submission_tail + 1) % stream.submission_queue_size
         stream.sq_buffer.append(host_req)
         
-        # 3. Trigger Fetch if not already fetching
-        if not stream.is_fetching:
-            self._schedule_fetch(stream_id)
+        # 3. Trigger Arbitration if not already fetching
+        if not self.is_fetching:
+            self._schedule_fetch()
             
         return True
 
-    def _schedule_fetch(self, stream_id):
-        stream = self.input_streams[stream_id]
-        if not stream.sq_buffer:
+    def _schedule_fetch(self):
+        """
+        Arbiter: Pick the next stream to fetch based on WRR and URGENT priorities.
+        """
+        if self.is_fetching:
             return
 
-        stream.is_fetching = True
+        # 1. Check for URGENT streams first
+        urgent_streams = [i for i, s in enumerate(self.input_streams) if s.priority_class == "URGENT" and s.sq_buffer]
+        if urgent_streams:
+            # Simple round robin among urgent
+            target_stream_id = urgent_streams[0] 
+            self._fetch_from_stream(target_stream_id)
+            return
+
+        # 2. WRR for HIGH, MEDIUM, LOW
+        # Search for a stream with remaining weight
+        found = False
+        for _ in range(len(self.input_streams)):
+            stream = self.input_streams[self.current_wrr_stream_index]
+            if stream.sq_buffer and stream.priority_class != "URGENT":
+                if self.remaining_weight_for_current_stream == 0:
+                    self.remaining_weight_for_current_stream = self.priority_weights.get(stream.priority_class, 1)
+                
+                found = True
+                break
+            
+            # Move to next stream
+            self.current_wrr_stream_index = (self.current_wrr_stream_index + 1) % len(self.input_streams)
+            self.remaining_weight_for_current_stream = 0
+
+        if found:
+            self._fetch_from_stream(self.current_wrr_stream_index)
+            self.remaining_weight_for_current_stream -= 1
+            if self.remaining_weight_for_current_stream == 0:
+                self.current_wrr_stream_index = (self.current_wrr_stream_index + 1) % len(self.input_streams)
+
+    def _fetch_from_stream(self, stream_id):
+        stream = self.input_streams[stream_id]
+        self.is_fetching = True
         
-        # Calculate PCIe delay for fetching a batch
         batch_size = min(len(stream.sq_buffer), self.queue_fetch_size)
-        # NVMe command is 64 bytes
         transfer_size = batch_size * 64 
-        pcie_delay = self.pcie_base_delay + int(transfer_size / (self.pcie_bandwidth * 1e9 / 1e9)) # Simplified
+        pcie_delay = self.pcie_base_delay + int(transfer_size / (self.pcie_bandwidth * 1e9 / 1e9))
         
         from mqsim.sim.engine import Engine
         Engine().register_sim_event(Engine().time + pcie_delay, self, 
@@ -109,15 +146,7 @@ class HostInterfaceNVMe(SimObject):
         user_req.already_finished = True
         stream = self.input_streams[user_req.stream_id]
         
-        # 1. Check if CQ is full
-        cq_occupancy = (stream.completion_tail - stream.completion_head + stream.completion_queue_size) % stream.completion_queue_size
-        if cq_occupancy >= stream.completion_queue_size - 1:
-            # In real MQSim, it would wait for Head doorbell update. 
-            # For now, we assume host always makes room.
-            pass
-
-        # 2. Write to CQ (SSD action) with PCIe delay
-        # NVMe completion is 16 bytes
+        # Write to CQ (SSD action) with PCIe delay
         pcie_delay = self.pcie_base_delay + int(16 / (self.pcie_bandwidth * 1e9 / 1e9))
         
         from mqsim.sim.engine import Engine
@@ -136,7 +165,6 @@ class HostInterfaceNVMe(SimObject):
                     break
                 host_req = stream.sq_buffer.pop(0)
                 
-                # Create UserRequest
                 user_req = UserRequest(
                     stream_id=stream_id,
                     type=host_req['type'],
@@ -151,10 +179,9 @@ class HostInterfaceNVMe(SimObject):
                 if self.cache_manager:
                     self.cache_manager.process_new_user_request(user_req)
             
-            stream.is_fetching = False
-            # Check if more are waiting
-            if stream.sq_buffer:
-                self._schedule_fetch(stream_id)
+            self.is_fetching = False
+            # Trigger next arbitration
+            self._schedule_fetch()
 
         elif params["type"] == "COMPLETE":
             user_req = params["user_req"]
@@ -163,6 +190,5 @@ class HostInterfaceNVMe(SimObject):
             stream.on_the_fly_requests -= 1
             stream.completion_tail = (stream.completion_tail + 1) % stream.completion_queue_size
             
-            # Notify IO Flow
             if stream.io_flow:
                 stream.io_flow.consume_io_request(user_req.host_request)
