@@ -34,6 +34,7 @@ class FlashParameterSet:
 class DeviceParameterSet:
     def __init__(self):
         self.memory_type = "FLASH"
+        self.host_interface_type = "NVME"
         self.flash_channel_count = 0
         self.chip_no_per_channel = 4
         self.flash_params = FlashParameterSet()
@@ -57,6 +58,7 @@ class DeviceParameterSet:
 
     def deserialize(self, node):
         self.memory_type = node.findtext("Memory_Type")
+        self.host_interface_type = node.findtext("HostInterface_Type", "NVME")
         self.flash_channel_count = int(node.findtext("Flash_Channel_Count", "0"))
         self.chip_no_per_channel = int(node.findtext("Chip_No_Per_Channel", "4"))
         self.seed = int(node.findtext("Seed", "321"))

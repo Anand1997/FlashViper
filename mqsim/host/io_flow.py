@@ -71,10 +71,48 @@ class SyntheticIOFlow(SimObject):
 
     def execute_sim_event(self, event):
         # Initial burst to fill the queue depth
+        # MQSim often starts by filling the whole queue depth regardless of Stop_Time
         for _ in range(self.queue_depth):
-            req = self.generate_next_request()
+            # Bypass Stop_Time check for initial burst
+            req = self._generate_request_internal(ignore_stop_time=True)
             if req and self.host_interface:
                 self.host_interface.submit_io_request(self.stream_id, req)
+
+    def _generate_request_internal(self, ignore_stop_time=False):
+        if not ignore_stop_time and self.stop_time > 0 and Engine().time >= self.stop_time:
+            return None
+        if self.total_req_count > 0 and self.generated_request_count >= self.total_req_count:
+            return None
+            
+        # Determine request type
+        req_type = "READ" if self.rng.float_random() < self.read_ratio else "WRITE"
+        
+        # Determine LSA based on distribution
+        if self.address_distribution == "RANDOM_UNIFORM":
+            lsa = self.rng.uniform_uint(self.start_lsa, self.working_set_end_lsa)
+        elif self.address_distribution == "RANDOM_HOTCOLD":
+            if self.rng.float_random() < 0.95:
+                lsa = self.rng.uniform_uint(self.start_lsa, self.hot_region_end_lsa)
+            else:
+                lsa = self.rng.uniform_uint(self.hot_region_end_lsa + 1, self.working_set_end_lsa)
+        elif self.address_distribution == "STREAMING":
+            lsa = self.streaming_next_address
+            self.streaming_next_address += 8
+            if self.streaming_next_address > self.working_set_end_lsa:
+                self.streaming_next_address = self.start_lsa
+        else:
+            lsa = self.rng.uniform_uint(self.start_lsa, self.working_set_end_lsa)
+        
+        self.generated_request_count += 1
+        return {
+            'type': req_type,
+            'lsa': lsa,
+            'size': 8,
+            'arrival_time': Engine().time
+        }
+
+    def generate_next_request(self):
+        return self._generate_request_internal(ignore_stop_time=False)
 
     def consume_io_request(self, host_req):
         """

@@ -154,11 +154,10 @@ class DataCacheManagerSimple(DataCacheManagerBase):
             )
             
             import math
-            # Simplified: just acknowledge after DRAM delay + some host interface delay
-            host_interface_delay = 40000 
-            
-            delay = max(1, math.ceil(access_time)) + host_interface_delay
-            # Acknowledge user request after delay
+            # Only DRAM access delay for cache insert. 
+            # Controller processing delay is already handled by HostInterface.
+            delay = max(1, math.ceil(access_time))
+            # Acknowledge user request after DRAM delay
             Engine().register_sim_event(Engine().time + delay, self, parameters=user_request)
             
             # Start actual NVM write after a small delay to avoid recursion

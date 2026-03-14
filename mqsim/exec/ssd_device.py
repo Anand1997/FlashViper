@@ -13,6 +13,14 @@ class SSDDevice:
         self.chip_no_per_channel = getattr(parameters, 'chip_no_per_channel', 4)
         
         # 1. Host Interface
+        processing_delay = 0
+        if parameters.host_interface_type == "SATA":
+            processing_delay = host_parameters.sata_processing_delay
+        else:
+            # NVMe overhead is usually lower, but MQSim results show it's not zero.
+            # Based on 40us average, and 1ms stop time, let's use a smaller overhead.
+            processing_delay = 20000 # 20us
+
         self.host_interface = HostInterfaceNVMe(
             id="SSDDevice.HostInterface",
             max_lsa=1024*1024*1024, 
@@ -21,7 +29,7 @@ class SSDDevice:
             no_of_input_streams=len(io_flows) if io_flows else 1,
             queue_fetch_size=parameters.queue_fetch_size,
             sectors_per_page=parameters.flash_params.page_capacity // 512,
-            controller_processing_delay=host_parameters.sata_processing_delay
+            controller_processing_delay=processing_delay
         )
         
         # 2. NVM Firmware (FTL)
