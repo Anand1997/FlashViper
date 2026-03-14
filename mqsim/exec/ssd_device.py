@@ -36,7 +36,8 @@ class SSDDevice:
             seed=parameters.seed,
             cmt_capacity=parameters.cmt_capacity,
             stream_count=len(io_flows) if io_flows else 1,
-            scheme=parameters.plane_allocation_scheme
+            scheme=parameters.plane_allocation_scheme,
+            ideal=parameters.ideal_mapping_table
         )
         self.firmware.set_host_interface(self.host_interface)
         

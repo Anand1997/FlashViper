@@ -10,7 +10,7 @@ class FTL(SimObject):
     def __init__(self, id, channel_no, chip_no_per_channel, die_no_per_chip, 
                  plane_no_per_die, block_no_per_plane, page_no_per_block, 
                  page_size_in_sectors, over_provisioning_ratio, seed,
-                 cmt_capacity=1024, stream_count=1, scheme="CWDP"):
+                 cmt_capacity=1024, stream_count=1, scheme="CWDP", ideal=False):
         super().__init__(id)
         self.channel_no = channel_no
         self.chip_no_per_channel = chip_no_per_channel
@@ -35,7 +35,7 @@ class FTL(SimObject):
                                 block_no_per_plane * page_no_per_block)
         
         no_of_logical_pages = int(total_physical_pages * (1.0 - over_provisioning_ratio))
-        self.address_mapping_unit = PageLevelAddressMapping(no_of_logical_pages, cmt_capacity, stream_count, scheme=scheme)
+        self.address_mapping_unit = PageLevelAddressMapping(no_of_logical_pages, cmt_capacity, stream_count, scheme=scheme, ideal=ideal)
 
         # 3. Initialize Transaction Scheduling Unit (TSU)
         self.tsu = TSUOutOfOrder(f"{id}.TSU", channel_no, chip_no_per_channel, stream_count=stream_count)
