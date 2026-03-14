@@ -93,4 +93,13 @@ class SSDDevice:
         for i, flow in enumerate(io_flows):
             if hasattr(flow, 'initial_occupancy_percentage'):
                 occupancy_ratio = flow.initial_occupancy_percentage / 100.0
-                self.firmware.perform_preconditioning(occupancy_ratio, i)
+                address_dist = getattr(flow, 'address_distribution', "RANDOM_UNIFORM")
+                hot_ratio = getattr(flow, 'hot_ratio', 0.1)
+                working_set_ratio = getattr(flow, 'working_set_ratio', 0.8)
+                
+                self.firmware.perform_preconditioning(
+                    occupancy_ratio, i, 
+                    address_distribution=address_dist,
+                    hot_ratio=hot_ratio,
+                    working_set_ratio=working_set_ratio
+                )

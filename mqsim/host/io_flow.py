@@ -4,7 +4,8 @@ from mqsim.sim.engine import Engine
 
 class SyntheticIOFlow(SimObject):
     def __init__(self, id, stream_id, read_ratio, start_lsa, end_lsa, seed, 
-                 queue_depth=1, stop_time=0, total_req_count=0, host_interface=None):
+                 queue_depth=1, stop_time=0, total_req_count=0, host_interface=None,
+                 address_distribution="RANDOM_UNIFORM", hot_ratio=0.1, working_set_ratio=0.8):
         super().__init__(id)
         self.stream_id = stream_id
         self.read_ratio = read_ratio
@@ -16,30 +17,51 @@ class SyntheticIOFlow(SimObject):
         self.host_interface = host_interface
         self.rng = RandomGenerator(seed)
         
+        self.address_distribution = address_distribution
+        self.hot_ratio = hot_ratio
+        self.working_set_ratio = working_set_ratio
+        
+        # Calculate working set range
+        self.working_set_end_lsa = int(start_lsa + (end_lsa - start_lsa) * working_set_ratio)
+        self.hot_region_end_lsa = int(start_lsa + (self.working_set_end_lsa - start_lsa) * hot_ratio)
+        
         self.generated_request_count = 0
         self.serviced_request_count = 0
+        self.streaming_next_address = start_lsa
         
         # Stats
         self.total_device_response_time = 0
 
     def generate_next_request(self):
-        if self.stop_time > 0 and Engine().time >= self.stop_time:
-            return None
-        if self.total_req_count > 0 and self.generated_request_count >= self.total_req_count:
+        if (self.stop_time > 0 and Engine().time >= self.stop_time) or \
+           (self.total_req_count > 0 and self.generated_request_count >= self.total_req_count):
             return None
             
         # Determine request type
-        prob = self.rng.float_random()
-        req_type = "READ" if prob < self.read_ratio else "WRITE"
+        req_type = "READ" if self.rng.float_random() < self.read_ratio else "WRITE"
         
-        # Determine LSA (Uniform)
-        lsa = self.rng.uniform_uint(self.start_lsa, self.end_lsa)
+        # Determine LSA based on distribution
+        if self.address_distribution == "RANDOM_UNIFORM":
+            lsa = self.rng.uniform_uint(self.start_lsa, self.working_set_end_lsa)
+        elif self.address_distribution == "RANDOM_HOTCOLD":
+            # 95% of requests to hot region (simplified MQSim default)
+            if self.rng.float_random() < 0.95:
+                lsa = self.rng.uniform_uint(self.start_lsa, self.hot_region_end_lsa)
+            else:
+                lsa = self.rng.uniform_uint(self.hot_region_end_lsa + 1, self.working_set_end_lsa)
+        elif self.address_distribution == "STREAMING":
+            lsa = self.streaming_next_address
+            self.streaming_next_address += 8 # size
+            if self.streaming_next_address > self.working_set_end_lsa:
+                self.streaming_next_address = self.start_lsa
+        else:
+            lsa = self.rng.uniform_uint(self.start_lsa, self.working_set_end_lsa)
         
         self.generated_request_count += 1
         return {
             'type': req_type,
             'lsa': lsa,
-            'size': 8, # Fixed size for now
+            'size': 8,
             'arrival_time': Engine().time
         }
 

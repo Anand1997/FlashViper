@@ -55,23 +55,49 @@ class FTL(SimObject):
         self.host_interface = host_interface
         self.tsu.host_interface = host_interface
 
-    def perform_preconditioning(self, occupancy_ratio, stream_id):
+    def perform_preconditioning(self, occupancy_ratio, stream_id, 
+                                address_distribution="RANDOM_UNIFORM", 
+                                hot_ratio=0.1, working_set_ratio=0.8):
         """
-        Fills the mapping table and physical blocks to reach target occupancy.
-        Bypasses TSU and PHY for speed.
+        Fills the mapping table and physical blocks to reach target occupancy,
+        matching the synthetic workload distribution.
         """
         if occupancy_ratio <= 0:
             return
             
         no_of_logical_pages = self.address_mapping_unit.no_of_logical_pages
+        # Only precondition within the working set
+        working_set_pages = int(no_of_logical_pages * working_set_ratio)
         pages_to_write = int(no_of_logical_pages * occupancy_ratio)
         
-        print(f"Preconditioning Stream {stream_id}: Writing {pages_to_write} pages ({occupancy_ratio*100}% occupancy)")
+        # Ensure we don't try to write more than the working set
+        pages_to_write = min(pages_to_write, working_set_pages)
         
-        # Use a random sample of LPAs
+        print(f"Preconditioning Stream {stream_id}: Writing {pages_to_write} pages ({occupancy_ratio*100}% occupancy, {address_distribution})")
+        
+        target_lpas = []
         import random
-        all_lpas = list(range(no_of_logical_pages))
-        target_lpas = random.sample(all_lpas, pages_to_write)
+        
+        if address_distribution == "RANDOM_HOTCOLD":
+            # MQSim approach: Allocate 95% of preconditioning writes to the hot region 
+            # until it's full or we reach the 95% target.
+            hot_region_pages = int(working_set_pages * hot_ratio)
+            cold_region_pages = working_set_pages - hot_region_pages
+            
+            # Target 95% of writes to hot region
+            hot_writes_target = int(pages_to_write * 0.95)
+            # But can't write more than hot region size
+            hot_writes = min(hot_writes_target, hot_region_pages)
+            cold_writes = pages_to_write - hot_writes
+            
+            # Hot LPAs
+            target_lpas.extend(random.sample(range(0, hot_region_pages), hot_writes))
+            # Cold LPAs
+            if cold_region_pages > 0:
+                target_lpas.extend(random.sample(range(hot_region_pages, working_set_pages), min(cold_writes, cold_region_pages)))
+        else:
+            # UNIFORM or STREAMING
+            target_lpas = random.sample(range(0, working_set_pages), pages_to_write)
         
         for lpa in target_lpas:
             # Static allocation to find a plane
