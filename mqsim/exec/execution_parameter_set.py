@@ -84,11 +84,13 @@ class HostParameterSet:
     def __init__(self):
         self.pcie_lane_count = 0
         self.pcie_lane_bandwidth = 1.0
+        self.sata_processing_delay = 0
         self.io_flow_definitions = []
 
     def deserialize(self, node):
         self.pcie_lane_count = int(node.findtext("PCIe_Lane_Count", "4"))
         self.pcie_lane_bandwidth = float(node.findtext("PCIe_Lane_Bandwidth", "1.0"))
+        self.sata_processing_delay = int(node.findtext("SATA_Processing_Delay", "0"))
 
 class IOFlowParameterSet:
     def __init__(self):

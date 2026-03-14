@@ -4,8 +4,9 @@ from mqsim.ssd.host_interface_nvme import HostInterfaceNVMe
 from mqsim.ssd.nvm_phy import NVMPhy
 
 class SSDDevice:
-    def __init__(self, parameters, io_flows):
+    def __init__(self, parameters, host_parameters, io_flows):
         self.parameters = parameters
+        self.host_parameters = host_parameters
         self.io_flows = io_flows
         self.memory_type = parameters.memory_type
         self.channel_count = parameters.flash_channel_count
@@ -19,7 +20,8 @@ class SSDDevice:
             completion_queue_depth=parameters.io_queue_depth,
             no_of_input_streams=len(io_flows) if io_flows else 1,
             queue_fetch_size=parameters.queue_fetch_size,
-            sectors_per_page=parameters.flash_params.page_capacity // 512
+            sectors_per_page=parameters.flash_params.page_capacity // 512,
+            controller_processing_delay=host_parameters.sata_processing_delay
         )
         
         # 2. NVM Firmware (FTL)

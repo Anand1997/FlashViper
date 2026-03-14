@@ -30,7 +30,7 @@ class InputStreamNVMe:
 
 class HostInterfaceNVMe(SimObject):
     def __init__(self, id, max_lsa, submission_queue_depth, completion_queue_depth,
-                 no_of_input_streams, queue_fetch_size, sectors_per_page):
+                 no_of_input_streams, queue_fetch_size, sectors_per_page, controller_processing_delay=0):
         super().__init__(id)
         self.max_lsa = max_lsa
         self.submission_queue_depth = submission_queue_depth
@@ -38,6 +38,7 @@ class HostInterfaceNVMe(SimObject):
         self.no_of_input_streams = no_of_input_streams
         self.queue_fetch_size = queue_fetch_size
         self.sectors_per_page = sectors_per_page
+        self.controller_processing_delay = controller_processing_delay
         
         self.input_streams = []
         self.cache_manager = None # Will be linked later
@@ -161,6 +162,7 @@ class HostInterfaceNVMe(SimObject):
 
     def execute_sim_event(self, event):
         params = event.parameters
+        from mqsim.sim.engine import Engine
         if params["type"] == "FETCH":
             stream_id = params["stream_id"]
             batch_size = params["batch_size"]
@@ -182,12 +184,22 @@ class HostInterfaceNVMe(SimObject):
                 stream.on_the_fly_requests += 1
                 stream.submission_head = (stream.submission_head + 1) % stream.submission_queue_size
                 
-                if self.cache_manager:
-                    self.cache_manager.process_new_user_request(user_req)
+                # Add controller processing delay
+                if self.controller_processing_delay > 0:
+                    Engine().register_sim_event(Engine().time + self.controller_processing_delay, self, 
+                                                 parameters={"type": "PROCESS", "user_req": user_req})
+                else:
+                    if self.cache_manager:
+                        self.cache_manager.process_new_user_request(user_req)
             
             self.is_fetching = False
             # Trigger next arbitration
             self._schedule_fetch()
+
+        elif params["type"] == "PROCESS":
+            user_req = params["user_req"]
+            if self.cache_manager:
+                self.cache_manager.process_new_user_request(user_req)
 
         elif params["type"] == "COMPLETE":
             user_req = params["user_req"]

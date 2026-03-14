@@ -44,6 +44,7 @@ def main():
         # 2. Instantiate SSD Device
         ssd = SSDDevice(
             parameters=exec_params.ssd_device_config,
+            host_parameters=exec_params.host_config,
             io_flows=scenario.flow_definitions
         )
         
