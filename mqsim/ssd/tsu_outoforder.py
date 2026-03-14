@@ -312,3 +312,10 @@ class TSUOutOfOrder(TSUBase):
             chip.start_command_execution(cmd_type, die_id, base_tx.address.get("page", 0))
 
     def execute_sim_event(self, event): pass
+
+    def report_results_in_xml(self, name_prefix, xml_writer):
+        xmlwriter = xml_writer
+        tmp = name_prefix + ".TSU"
+        xmlwriter.write_open_tag(tmp)
+        # Detailed queue reports can be added here if needed
+        xmlwriter.write_close_tag()

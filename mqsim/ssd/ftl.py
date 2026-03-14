@@ -5,6 +5,7 @@ from mqsim.ssd.tsu_outoforder import TSUOutOfOrder
 from mqsim.ssd.gc_and_wl_unit import GCUnit
 from mqsim.ssd.nvm_transaction import NVMTransaction, TransactionType, TransactionSource
 from mqsim.utils.random_generator import RandomGenerator
+from mqsim.sim.engine import Engine
 
 class FTL(SimObject):
     def __init__(self, id, channel_no, chip_no_per_channel, die_no_per_chip, 
@@ -52,6 +53,16 @@ class FTL(SimObject):
         self.phy = None
         self.data_cache_manager = None
         self.host_interface = None
+
+        # MQSim Style Stats
+        self.STAT_issued_flash_read_cmd = 0
+        self.STAT_issued_flash_program_cmd = 0
+        self.STAT_issued_flash_erase_cmd = 0
+        self.STAT_issued_flash_read_cmd_for_mapping = 0
+        self.STAT_issued_flash_program_cmd_for_mapping = 0
+        self.STAT_cmt_hits = 0
+        self.STAT_cmt_misses = 0
+        self.STAT_total_cmt_queries = 0
 
     def set_host_interface(self, host_interface):
         self.host_interface = host_interface
@@ -154,14 +165,16 @@ class FTL(SimObject):
             )
             
             # 1. CMT Lookup
+            self.STAT_total_cmt_queries += 1
             if not self.address_mapping_unit.query_cmt(tr.stream_id, tr.lpa):
                 # MISS: Generate mapping read
-                # In MQSim, multiple transactions for the same LPA wait for one mapping read
+                self.STAT_cmt_misses += 1
                 domain = self.address_mapping_unit.domains[tr.stream_id]
                 if tr.lpa not in domain.waiting_unmapped_read_transactions:
                     domain.waiting_unmapped_read_transactions[tr.lpa] = []
                     
                     # Generate Mapping Read Transaction
+                    self.STAT_issued_flash_read_cmd_for_mapping += 1
                     mapping_tr = NVMTransaction(
                         stream_id=tr.stream_id,
                         transaction_type=TransactionType.READ,
@@ -179,6 +192,7 @@ class FTL(SimObject):
                         evicted_lpa, evicted_slot = domain.cmt.evict_lru()
                         if evicted_slot and evicted_slot.dirty:
                             # Generate Mapping Writeback
+                            self.STAT_issued_flash_program_cmd_for_mapping += 1
                             wb_tr = NVMTransaction(
                                 stream_id=tr.stream_id,
                                 transaction_type=TransactionType.WRITE,
@@ -192,6 +206,8 @@ class FTL(SimObject):
                 
                 domain.waiting_unmapped_read_transactions[tr.lpa].append(tr)
                 tr.suspend_required = True # Mark that it shouldn't be scheduled yet
+            else:
+                self.STAT_cmt_hits += 1
             
             # 2. Address Allocation
             tr.address = self.address_mapping_unit.get_physical_address(
@@ -200,11 +216,13 @@ class FTL(SimObject):
             tr.address.update({"block": 0, "page": 0})
             
             if tr.type == "WRITE":
+                self.STAT_issued_flash_program_cmd += 1
                 allocated_addr = self.block_manager.allocate_page_for_user_write(tr.stream_id, tr.address)
                 tr.address = allocated_addr
                 tr.ppa = 0 # Dummy
                 self.address_mapping_unit.update_mapping_info(tr.stream_id, tr.lpa, tr.ppa)
             else:
+                self.STAT_issued_flash_read_cmd += 1
                 tr.ppa = self.address_mapping_unit.get_ppa(tr.stream_id, tr.lpa)
             
             user_request.transaction_list.append(tr)
@@ -217,6 +235,22 @@ class FTL(SimObject):
         self.tsu.schedule()
                     
         return user_request.transaction_list
+
+    def report_results_in_xml(self, name_prefix, xml_writer):
+        xmlwriter = xml_writer
+        tmp = name_prefix + ".FTL"
+        xmlwriter.write_open_tag(tmp)
+        
+        xmlwriter.write_attribute_string("Issued_Flash_Read_CMD", self.STAT_issued_flash_read_cmd)
+        xmlwriter.write_attribute_string("Issued_Flash_Program_CMD", self.STAT_issued_flash_program_cmd)
+        xmlwriter.write_attribute_string("Issued_Flash_Erase_CMD", self.STAT_issued_flash_erase_cmd)
+        xmlwriter.write_attribute_string("Issued_Flash_Read_CMD_For_Mapping", self.STAT_issued_flash_read_cmd_for_mapping)
+        xmlwriter.write_attribute_string("Issued_Flash_Program_CMD_For_Mapping", self.STAT_issued_flash_program_cmd_for_mapping)
+        xmlwriter.write_attribute_string("CMT_Hits", self.STAT_cmt_hits)
+        xmlwriter.write_attribute_string("CMT_Misses", self.STAT_cmt_misses)
+        xmlwriter.write_attribute_string("Total_CMT_Queries", self.STAT_total_cmt_queries)
+        
+        xmlwriter.write_close_tag()
 
     def handle_transaction_finished(self, transaction):
         if transaction.source == TransactionSource.MAPPING:
@@ -241,7 +275,6 @@ class FTL(SimObject):
                     self.tsu.schedule()
             else:
                 # Mapping writeback finished
-                # In MQSim, we might need to update GTD or just mark as clean
                 pass
 
     def execute_sim_event(self, event):

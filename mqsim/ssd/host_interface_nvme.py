@@ -210,3 +210,18 @@ class HostInterfaceNVMe(SimObject):
             
             if stream.io_flow:
                 stream.io_flow.consume_io_request(user_req.host_request)
+
+    def report_results_in_xml(self, name_prefix, xml_writer):
+        xmlwriter = xml_writer
+        tmp = name_prefix + ".HostInterface"
+        xmlwriter.write_open_tag(tmp)
+        
+        for i, stream in enumerate(self.input_streams):
+            xmlwriter.write_open_tag("SSDDevice.IO_Stream")
+            xmlwriter.write_attribute_string("Stream_ID", i)
+            # Add placeholders for turnaround/execution times if tracked
+            xmlwriter.write_attribute_string("Average_Read_Transaction_Turnaround_Time", 0)
+            xmlwriter.write_attribute_string("Average_Write_Transaction_Turnaround_Time", 0)
+            xmlwriter.write_close_tag()
+            
+        xmlwriter.write_close_tag()

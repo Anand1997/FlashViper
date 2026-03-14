@@ -49,3 +49,10 @@ class HostSystem:
 
     def get_io_flows(self):
         return self.io_flows
+
+    def report_results_in_xml(self, name_prefix, xml_writer):
+        xmlwriter = xml_writer
+        xmlwriter.write_open_tag("Host")
+        for flow in self.io_flows:
+            flow.report_results_in_xml(name_prefix, xmlwriter)
+        xmlwriter.write_close_tag()

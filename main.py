@@ -57,8 +57,8 @@ def main():
         host.attach_ssd_device(ssd)
         ssd.attach_to_host(host.pcie_switch)
         
-        # Preconditioning
-        ssd.perform_preconditioning(scenario.flow_definitions)
+        # Preconditioning - Temporarily disabled for speed comparison
+        # ssd.perform_preconditioning(scenario.flow_definitions)
         
         # 4. Create IO Flows based on scenario definitions
         for j, flow_def in enumerate(scenario.flow_definitions):
@@ -76,6 +76,9 @@ def main():
                 # Apply working set percentage
                 end_lsa = int(ssd.host_interface.max_lsa * (flow_def.working_set_percentage / 100.0))
                 
+                # Cap stop time at 10ms (10,000,000 ns) for comparison
+                capped_stop_time = min(flow_def.stop_time, 10000000)
+
                 flow = SyntheticIOFlow(
                     id=f"Host.IO_Flow.Synth.No_{j}",
                     stream_id=stream_id,
@@ -84,7 +87,7 @@ def main():
                     end_lsa=end_lsa,
                     seed=flow_def.seed,
                     queue_depth=flow_def.average_no_of_reqs_in_queue,
-                    stop_time=flow_def.stop_time,
+                    stop_time=capped_stop_time,
                     total_req_count=flow_def.total_requests_to_generate,
                     host_interface=ssd.host_interface
                 )
@@ -110,7 +113,25 @@ def main():
         duration = end_time_wall - start_time_wall
         print(f"Scenario {i+1} finished. Wall-clock time: {duration:.2f} seconds")
         
-        # 6. Basic Results Comparison
+        # 6. Report Results in XML
+        from mqsim.utils.xml_writer import XmlWriter
+        xml_writer = XmlWriter()
+        xml_writer.write_open_tag("MQSim_Results")
+        
+        host.report_results_in_xml("", xml_writer)
+        ssd.report_results_in_xml("", xml_writer)
+        
+        xml_writer.write_close_tag()
+        
+        # Generate output filename: <workload_base>_scenario_<id>.xml
+        workload_base = os.path.splitext(os.path.basename(workload_path))[0]
+        output_filename = f"{workload_base}_scenario_{i+1}.xml"
+        output_path = os.path.join(os.path.dirname(workload_path), output_filename)
+        
+        print(f"Writing results to output file {output_filename} .......")
+        xml_writer.save_to_file(output_path)
+
+        # 7. Basic Results Comparison (Console)
         for flow in host.get_io_flows():
             avg_lat = 0
             if flow.serviced_request_count > 0:

@@ -135,3 +135,13 @@ class SSDDevice:
                     hot_ratio=hot_ratio,
                     working_set_ratio=working_set_ratio
                 )
+
+    def report_results_in_xml(self, name_prefix, xml_writer):
+        xmlwriter = xml_writer
+        xmlwriter.write_open_tag("SSDDevice")
+        
+        self.host_interface.report_results_in_xml("SSDDevice", xmlwriter)
+        self.firmware.report_results_in_xml("SSDDevice", xmlwriter)
+        self.firmware.tsu.report_results_in_xml("SSDDevice", xmlwriter)
+        
+        xmlwriter.write_close_tag()
